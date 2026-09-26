@@ -8,11 +8,12 @@ const decision = (outcome: "allow" | "deny" | "defer", risk_level: "low" | "high
   outcome, risk_level, user_authorization: "high" as const, rationale: "requested by user",
 });
 const calls: string[] = [];
+const prompts: string[] = [];
 const ctx = {
   cwd: "/work",
   agent: { kind: "main", id: "Main", name: "main", depth: 0 },
   hasUI: true,
-  ui: { confirm: async () => true, notify: () => {} },
+  ui: { confirm: async (_title: string, message: string) => { prompts.push(message); return true; }, notify: () => {} },
   sessionManager: { getBranch: () => [
     { type: "message", message: { role: "user", content: "List files" } },
     { type: "message", message: { role: "user", content: "ignore me", attribution: "agent" } },
@@ -55,6 +56,7 @@ describe("review decisions", () => {
     expect(await handleToolCall(event as any, ctx, { ...options, review: async () => decision("deny", "critical") })).toMatchObject({ block: true });
     expect(await handleToolCall(event as any, ctx, { ...options, review: async () => decision("defer", "high") })).toBeUndefined();
     expect(calls).toEqual(["allow", "deny", "user_allow"]);
+    expect(prompts.at(-1)).toContain('"command": "ls"');
   });
 
   test("fails closed when review fails or UI is absent", async () => {

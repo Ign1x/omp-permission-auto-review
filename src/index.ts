@@ -103,7 +103,8 @@ export async function handleToolCall(
       record(event, "deny", decision.rationale);
       return { block: true, reason: `Automatic review denied: ${decision.rationale}` };
     }
-    if (ctx.hasUI && await ctx.ui.confirm("Permission review", `${event.toolName}: ${decision.rationale}\n\nApprove this exact call?`)) {
+    const call = JSON.stringify({ tool: event.toolName, input: event.input }, null, 2);
+    if (ctx.hasUI && await ctx.ui.confirm("Permission review", `${decision.rationale}\n\n${call}\n\nApprove this call?`)) {
       record(event, "user_allow", decision.rationale);
       return undefined;
     }
