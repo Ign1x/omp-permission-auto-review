@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { DEFAULT_CONFIG, parseConfig } from "../src/config.ts";
-import { handleToolCall, reviewEvidence } from "../src/index.ts";
+import { handleToolCall, modelReview, reviewEvidence } from "../src/index.ts";
 import { mayAutoApprove, parseDecision } from "../src/review.ts";
 
 const event = { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: { command: "ls" } } as const;
@@ -59,10 +59,68 @@ describe("review decisions", () => {
     expect(prompts.at(-1)).toContain('"command": "ls"');
   });
 
-  test("fails closed when review fails or UI is absent", async () => {
+  test("asks the user when automatic review fails and blocks without UI", async () => {
+    calls.length = 0;
+    prompts.length = 0;
     const options = { config: DEFAULT_CONFIG, record: record as any };
-    expect(await handleToolCall(event as any, ctx, { ...options, review: async () => { throw new Error("offline"); } })).toMatchObject({ block: true });
+    expect(await handleToolCall(event as any, ctx, { ...options, review: async () => { throw new Error("HTTP 503"); } })).toBeUndefined();
+    expect(calls).toEqual(["user_allow_unavailable"]);
+    expect(prompts.at(-1)).toContain("HTTP 503");
+    expect(prompts.at(-1)).toContain('"command": "ls"');
+    expect(await handleToolCall(event as any, { ...ctx, hasUI: false }, { ...options, review: async () => { throw new Error("offline"); } })).toMatchObject({ block: true });
+    expect(calls.at(-1)).toBe("review_unavailable");
+    const denyingCtx = { ...ctx, ui: { ...ctx.ui, confirm: async () => false } };
+    expect(await handleToolCall(event as any, denyingCtx, { ...options, review: async () => { throw new Error("offline"); } })).toMatchObject({ block: true });
+    expect(calls.at(-1)).toBe("user_deny_unavailable");
     expect(await handleToolCall(event as any, { ...ctx, hasUI: false }, { ...options, review: async () => decision("defer") })).toMatchObject({ block: true });
+  });
+
+  test("honors mode, exact tool rules, failure policy, and audit toggle", async () => {
+    calls.length = 0;
+    const options = { record: record as any, review: async () => { throw new Error("review should not run"); } };
+    expect(await handleToolCall(event as any, ctx, { ...options, config: { ...DEFAULT_CONFIG, mode: "deny" } })).toMatchObject({ block: true });
+    expect(calls.at(-1)).toBe("policy_deny");
+    expect(await handleToolCall(event as any, ctx, {
+      ...options, config: { ...DEFAULT_CONFIG, mode: "deny", toolRules: { bash: "allow" } },
+    })).toBeUndefined();
+    expect(calls.at(-1)).toBe("policy_allow");
+    expect(await handleToolCall(event as any, ctx, { ...options, config: { ...DEFAULT_CONFIG, mode: "ask" } })).toBeUndefined();
+    expect(calls.at(-1)).toBe("user_allow");
+    const before = calls.length;
+    expect(await handleToolCall(event as any, ctx, {
+      ...options, config: { ...DEFAULT_CONFIG, mode: "yolo", auditLog: false },
+    })).toBeUndefined();
+    expect(calls.length).toBe(before);
+    expect(await handleToolCall(event as any, ctx, {
+      ...options, config: { ...DEFAULT_CONFIG, failurePolicy: "deny" },
+    })).toMatchObject({ block: true });
+    expect(calls.at(-1)).toBe("review_unavailable");
+  });
+
+  test("retries transient model errors and preserves provider diagnostics", async () => {
+    const reviewerCtx = {
+      ...ctx,
+      models: { resolve: () => ({}) },
+      modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test", headers: {} }) },
+    } as any;
+    const config = { ...DEFAULT_CONFIG, model: "gateway/test" };
+    let attempts = 0;
+    const complete = (async () => {
+      attempts++;
+      return attempts === 1
+        ? { stopReason: "error", errorStatus: 503, errorMessage: "upstream unavailable" }
+        : { stopReason: "stop", content: [{ type: "text", text: JSON.stringify(decision("allow")) }] };
+    }) as any;
+    expect(await modelReview(event as any, reviewerCtx, config, complete)).toEqual(decision("allow"));
+    expect(attempts).toBe(2);
+
+    attempts = 0;
+    const badRequest = (async () => {
+      attempts++;
+      return { stopReason: "error", errorStatus: 400, errorMessage: "invalid model" };
+    }) as any;
+    expect(modelReview(event as any, reviewerCtx, config, badRequest)).rejects.toThrow("HTTP 400): invalid model");
+    expect(attempts).toBe(1);
   });
 
   test("rejects oversized or invalid config", () => {

@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { completeSimple } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@oh-my-pi/pi-coding-agent";
 import { configPath, loadConfig, type Config } from "./config.ts";
+import { registerPermissionCommand } from "./permission-command.ts";
 import { mayAutoApprove, parseDecision, REVIEWER_SYSTEM_PROMPT, type Decision } from "./review.ts";
 
 function userText(content: unknown): string {
@@ -40,27 +41,42 @@ export function reviewEvidence(event: ToolCallEvent, ctx: ExtensionContext, conf
   return evidence;
 }
 
-export async function modelReview(event: ToolCallEvent, ctx: ExtensionContext, config: Config): Promise<Decision> {
+export async function modelReview(
+  event: ToolCallEvent,
+  ctx: ExtensionContext,
+  config: Config,
+  complete: typeof completeSimple = completeSimple,
+): Promise<Decision> {
   const evidence = reviewEvidence(event, ctx, config);
   const model = config.model === "current" ? ctx.model : ctx.models.resolve(config.model);
   if (!model) throw new Error(`review model is unavailable: ${config.model}`);
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok) throw new Error(`review model authentication failed: ${auth.error}`);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), config.timeoutMs);
+  // OMP stops extension handlers after 30 seconds, so leave time for fallback approval.
+  const timer = setTimeout(() => controller.abort(), Math.min(config.timeoutMs, 25000));
   try {
-    const result = await completeSimple(model, {
-      systemPrompt: [REVIEWER_SYSTEM_PROMPT],
-      messages: [{ role: "user", content: evidence, timestamp: Date.now() }],
-    }, {
-      apiKey: auth.apiKey,
-      headers: auth.headers,
-      signal: controller.signal,
-      maxTokens: config.maxTokens,
-    });
-    if (result.stopReason !== "stop") throw new Error(`reviewer stopped: ${result.stopReason}`);
-    const text = result.content.filter((part) => part.type === "text").map((part) => part.text).join("");
-    return parseDecision(text);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await complete(model, {
+        systemPrompt: [REVIEWER_SYSTEM_PROMPT],
+        messages: [{ role: "user", content: evidence, timestamp: Date.now() }],
+      }, {
+        apiKey: auth.apiKey,
+        headers: auth.headers,
+        signal: controller.signal,
+        maxTokens: config.maxTokens,
+      });
+      if (result.stopReason === "stop") {
+        const text = result.content.filter((part) => part.type === "text").map((part) => part.text).join("");
+        return parseDecision(text);
+      }
+      const status = result.errorStatus;
+      if (attempt === 0 && result.stopReason === "error" && !controller.signal.aborted &&
+          (status === undefined || status === 408 || status === 429 || status >= 500)) continue;
+      const detail = result.errorMessage?.replace(/\s+/g, " ").slice(0, 300);
+      throw new Error(`reviewer stopped: ${result.stopReason}${status ? ` (HTTP ${status})` : ""}${detail ? `: ${detail}` : ""}`);
+    }
+    throw new Error("reviewer retry exhausted");
   } finally {
     clearTimeout(timer);
   }
@@ -91,33 +107,66 @@ export async function handleToolCall(
   options: { review?: Review; config?: Config; record?: typeof audit } = {},
 ): Promise<{ block: true; reason: string } | undefined> {
   const record = options.record ?? audit;
-  let config: Config;
+  let config: Config | undefined;
+  const recordDecision = (outcome: string, detail: string) => {
+    if (config?.auditLog !== false) record(event, outcome, detail);
+  };
   try {
     config = options.config ?? loadConfig();
+    const policy = Object.hasOwn(config.toolRules, event.toolName) ? config.toolRules[event.toolName] : config.mode;
+    if (policy === "allow" || policy === "yolo") {
+      recordDecision("policy_allow", policy);
+      return undefined;
+    }
+    if (policy === "deny") {
+      recordDecision("policy_deny", policy);
+      return { block: true, reason: `Permission rule denies ${event.toolName}` };
+    }
+    if (policy === "ask") {
+      const call = JSON.stringify({ tool: event.toolName, input: event.input }, null, 2);
+      const approved = ctx.hasUI && await ctx.ui.confirm("Permission required", `${call}\n\nApprove this call?`);
+      recordDecision(approved ? "user_allow" : "user_deny", "ask policy");
+      return approved ? undefined : { block: true, reason: `Permission approval required for ${event.toolName}` };
+    }
     const decision = await (options.review ?? modelReview)(event, ctx, config);
     if (mayAutoApprove(decision)) {
-      record(event, "allow", decision.rationale);
+      recordDecision("allow", decision.rationale);
       return undefined;
     }
     if (decision.outcome === "deny" || decision.risk_level === "critical") {
-      record(event, "deny", decision.rationale);
+      recordDecision("deny", decision.rationale);
       return { block: true, reason: `Automatic review denied: ${decision.rationale}` };
     }
     const call = JSON.stringify({ tool: event.toolName, input: event.input }, null, 2);
     if (ctx.hasUI && await ctx.ui.confirm("Permission review", `${decision.rationale}\n\n${call}\n\nApprove this call?`)) {
-      record(event, "user_allow", decision.rationale);
+      recordDecision("user_allow", decision.rationale);
       return undefined;
     }
-    record(event, "user_deny", decision.rationale);
+    recordDecision("user_deny", decision.rationale);
     return { block: true, reason: `Permission review requires user approval: ${decision.rationale}` };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    record(event, "review_unavailable", reason);
-    ctx.ui.notify(`Permission review unavailable: ${reason}`, "error");
+    if (config?.failurePolicy === "deny") {
+      recordDecision("review_unavailable", reason);
+      return { block: true, reason: `Automatic review unavailable: ${reason}` };
+    }
+    if (ctx.hasUI) {
+      const call = JSON.stringify({ tool: event.toolName, input: event.input }, null, 2);
+      try {
+        const approved = await ctx.ui.confirm("Automatic review unavailable", `${reason}\n\n${call}\n\nApprove this call?`);
+        recordDecision(approved ? "user_allow_unavailable" : "user_deny_unavailable", reason);
+        if (approved) return undefined;
+      } catch (confirmError) {
+        recordDecision("review_unavailable", `${reason}; confirmation failed: ${String(confirmError)}`);
+      }
+    } else {
+      recordDecision("review_unavailable", reason);
+    }
     return { block: true, reason: `Automatic review unavailable: ${reason}` };
   }
 }
 
 export default function ompPermissionAutoReview(omp: ExtensionAPI): void {
+  registerPermissionCommand(omp);
   omp.on("tool_call", (event, ctx) => handleToolCall(event, ctx));
 }
