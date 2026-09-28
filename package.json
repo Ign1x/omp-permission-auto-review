@@ -1,6 +1,6 @@
 {
   "name": "omp-permission-auto-review",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Single-extension, model-backed tool approval for Oh My Pi",
   "type": "module",
   "license": "MIT",

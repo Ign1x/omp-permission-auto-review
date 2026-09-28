@@ -3,7 +3,7 @@ import { DEFAULT_CONFIG } from "../src/config.ts";
 import type { Decision } from "../src/review.ts";
 import { handleToolCall, modelReview } from "../src/index.ts";
 
-const event = { type: "tool_call", toolCallId: "fixture", toolName: "bash", input: { command: "ls" } } as const;
+const event = { type: "tool_call", toolCallId: "fixture", toolName: "bash", input: { command: "git status" } } as const;
 const decision = (outcome: Decision["outcome"] = "allow"): Decision => ({ outcome, risk_level: "low", user_authorization: "high", rationale: "Local file listing" });
 const response = (outcome: Decision["outcome"] = "allow") => ({ stopReason: "stop", content: [{ type: "text", text: JSON.stringify(decision(outcome)) }] });
 const ctx = {

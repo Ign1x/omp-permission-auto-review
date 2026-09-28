@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { completeSimple, type Effort } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@oh-my-pi/pi-coding-agent";
 import { configPath, loadConfig, type Config } from "./config.ts";
+import { matchBaselineRule } from "./baseline-rules.ts";
 import { registerPermissionCommand } from "./permission-command.ts";
 import { syncHandlerBudget } from "./handler-budget.ts";
 import { RETRY_DELAY_MS, seconds } from "./timing.ts";
@@ -147,7 +148,8 @@ export async function handleToolCall(
   };
   try {
     config = options.config ?? loadConfig();
-    const policy = Object.hasOwn(config.toolRules, event.toolName) ? config.toolRules[event.toolName] : config.mode;
+    const hasToolRule = Object.hasOwn(config.toolRules, event.toolName);
+    const policy = hasToolRule ? config.toolRules[event.toolName] : config.mode;
     if (policy === "allow" || policy === "yolo") {
       recordDecision("policy_allow", policy);
       return undefined;
@@ -161,6 +163,13 @@ export async function handleToolCall(
       const approved = ctx.hasUI && await ctx.ui.confirm("Permission required", `${call}\n\nApprove this call?`);
       recordDecision(approved ? "user_allow" : "user_deny", "ask policy");
       return approved ? undefined : { block: true, reason: `Permission approval required for ${event.toolName}` };
+    }
+    if (policy === "review" && config.baselineRules && !hasToolRule) {
+      const rule = matchBaselineRule(event.toolName, event.input, ctx.cwd);
+      if (rule) {
+        recordDecision("baseline_allow", rule.id);
+        return undefined;
+      }
     }
     const decision = await (options.review ?? modelReview)(event, ctx, config);
     if (mayAutoApprove(decision)) {

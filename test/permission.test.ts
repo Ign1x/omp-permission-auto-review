@@ -41,6 +41,8 @@ describe("permission settings", () => {
     expect(() => parseConfig(JSON.parse('{"__proto__":{}}'))).toThrow("unknown config key");
     for (const maxRetries of [-1, 1.5, 6, "2"]) expect(() => parseConfig({ maxRetries })).toThrow("maxRetries");
     expect(() => parseConfig({ reasoning: "off" })).toThrow("reasoning");
+    expect(parseConfig({}).baselineRules).toBe(true);
+    for (const baselineRules of ["on", null, 1, {}]) expect(() => parseConfig({ baselineRules })).toThrow("baselineRules");
     expect(parseConfig({ timeoutMs: 120000 })).toMatchObject({ timeoutMs: 120000, maxRetries: 2, reasoning: "low" });
   });
 
@@ -114,6 +116,31 @@ describe("permission settings", () => {
     await handlePermissionCommand("", ctx, { basePath, userPath });
     expect(loadConfig(basePath, userPath).mode).toBe("ask");
     expect(registered.options.getArgumentCompletions("mo")[0].value).toBe("mode");
+    expect(registered.options.getArgumentCompletions("baseline l")[0].value).toBe("baseline list");
+  });
+
+  test("baseline settings support commands, listing, menu and reset", async () => {
+    const options = paths();
+    saveConfig({ baselineRules: false }, options.basePath, options.userPath);
+    const notices: string[] = [];
+    const choices = ["Baseline rules", "on", "Baseline rules", "list", "Done"];
+    const ctx = { hasUI: true, ui: {
+      select: async () => choices.shift(),
+      confirm: async () => true,
+      notify: (message: string) => notices.push(message),
+    } } as any;
+    await handlePermissionCommand("", ctx, options);
+    expect(loadConfig(options.basePath, options.userPath).baselineRules).toBe(true);
+    expect(notices.at(-1)).toContain("local.ls: ls");
+    await handlePermissionCommand("baseline off", ctx, options);
+    expect(loadConfig(options.basePath, options.userPath).baselineRules).toBe(false);
+    expect(notices.at(-1)).toContain("baseline rules: off");
+    await handlePermissionCommand("baseline invalid", ctx, options);
+    expect(notices.at(-1)).toContain("baseline must be on, off, or list");
+    expect(loadConfig(options.basePath, options.userPath).baselineRules).toBe(false);
+    await handlePermissionCommand("reset", ctx, options);
+    expect(loadConfig(options.basePath, options.userPath).baselineRules).toBe(true);
+    expect(readFileSync(options.managed, "utf8")).toBe('{"model":"gateway/test","mode":"review"}\n');
   });
 
   test("interactive menu edits an existing tool rule", async () => {

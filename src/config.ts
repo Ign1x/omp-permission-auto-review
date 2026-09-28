@@ -19,6 +19,7 @@ export interface Config {
   mode: Mode;
   failurePolicy: FailurePolicy;
   auditLog: boolean;
+  baselineRules: boolean;
   toolRules: Partial<Record<string, ToolPolicy>>;
 }
 
@@ -32,6 +33,7 @@ export const DEFAULT_CONFIG: Config = {
   mode: "review",
   failurePolicy: "ask",
   auditLog: true,
+  baselineRules: true,
   toolRules: {},
 };
 
@@ -75,6 +77,7 @@ export function parseConfig(value: unknown): Config {
   if (!["review", "ask", "deny", "yolo"].includes(config.mode)) throw new Error("invalid mode");
   if (!["ask", "deny"].includes(config.failurePolicy)) throw new Error("invalid failurePolicy");
   if (typeof config.auditLog !== "boolean") throw new Error("auditLog must be a boolean");
+  if (typeof config.baselineRules !== "boolean") throw new Error("baselineRules must be a boolean");
   if (!config.toolRules || typeof config.toolRules !== "object" || Array.isArray(config.toolRules)) {
     throw new Error("toolRules must be an object");
   }

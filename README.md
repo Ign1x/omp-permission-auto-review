@@ -1,6 +1,7 @@
 # omp-permission-auto-review
 
-A single OMP extension that reviews tool calls with a model before execution.
+A single OMP extension that checks tool calls before execution, using a local
+allow library for simple queries and a model for the remaining calls.
 It combines permission interception and automatic review in one `tool_call`
 handler, so no cross-extension authorizer registration is required.
 
@@ -38,6 +39,7 @@ path under the active OMP profile's agent directory:
   "mode": "review",
   "failurePolicy": "ask",
   "auditLog": true,
+  "baselineRules": true,
   "toolRules": {}
 }
 ```
@@ -48,7 +50,7 @@ Run `/permission` in OMP's interactive TUI to edit settings. Changes take
 effect on the next tool call, including in other running sessions. The menu
 covers review mode, reviewer model, thinking effort, retries, failure handling,
 timeout in seconds, token/input
-limits, audit logging, and exact tool-name rules. The same settings can be
+limits, audit logging, baseline rules, and exact tool-name rules. The same settings can be
 changed directly:
 
 ```text
@@ -63,18 +65,70 @@ changed directly:
 /permission max-tokens 4096
 /permission max-input 12000
 /permission audit on|off
+/permission baseline on|off|list
 /permission rule bash ask
 /permission rule edit deny
 /permission rule remove bash
 /permission reset
 ```
 
-`review` uses the model; `ask` always prompts; `deny` blocks; `yolo` runs tools
+`review` checks the baseline library, then uses the model for unmatched calls;
+`ask` always prompts; `deny` blocks; `yolo` runs tools
 without review. A tool rule overrides the global mode for that exact tool name.
 Tool rules accept `review`, `ask`, `allow`, or `deny`; they do not match shell
 command text or paths. When the reviewer is unavailable, `fallback ask` prompts
 in an interactive session and blocks without UI. `fallback deny` always blocks.
 Explicit reviewer denials still block under either fallback policy.
+
+## Baseline allow rules
+
+The built-in library is **enabled by default**, including with existing config
+files that omit `baselineRules`. A match skips model requests and manual prompts,
+including in headless sessions. It does not require reviewer credentials or
+conversation evidence. `/permission baseline off` disables the library;
+`/permission baseline list` displays its stable rule IDs and scope.
+
+Precedence is: an exact tool rule, then global mode, then (in global `review`
+mode) the baseline library, then model review. An explicit
+`/permission rule bash review` always uses the model, even for a baseline match.
+Explicit `ask` and `deny` policies also take priority over the library.
+
+The initial library covers only the `bash` tool and these commands:
+
+| Rule ID | Accepted scope |
+| --- | --- |
+| `local.pwd` | No arguments, `-L`, or `-P` |
+| `local.ls` | Literal local paths and selected display flags, such as `-la`, `-h`, `--all`, and `--color=never`; no recursion |
+| `local.stat` | Literal local paths with `-L`, `-f`, `-t`, or their long forms |
+| `local.uname` | Standard system information flags, such as `-a` or `-sm` |
+| `local.whoami` | No arguments |
+| `local.id` | Current user only: no arguments, `-u`, `-g`, `-G`, `-un`, `-gn`, or `-Gn` |
+| `local.basename` | One literal local path, optionally after `--` |
+| `local.dirname` | One literal local path, optionally after `--` |
+
+Matching checks the **entire command and tool input**. Simple quoted paths with
+spaces are supported. Pipes, command chaining, newlines, redirection, expansion,
+globs, escapes, wrappers, executable paths, unknown flags and URL filesystems
+all fall through to normal review, even when suspicious syntax appears inside
+quotes. Service, environment, PTY and background execution parameters also fall
+through, as do unknown tool input fields. Only ordinary `cwd`, a positive
+`timeout` up to 300 seconds, and `pty: false` / `async: false` are accepted in
+addition to `command`. Commands are bounded to 4096 characters and 128 words.
+
+Rules assume trusted standard utilities and OMP's execution environment. They
+do not verify binaries, PATH, shell startup code or direnv configuration.
+Commands such as `git status`, `git diff`, `find`, `sed` and `rg` remain on the
+model path: their configuration or options can run external code or write files.
+File-content readers and network commands are also outside the initial library.
+
+With auditing enabled, a match produces `outcome: "baseline_allow"` and the rule
+ID in `detail`, using the existing input fingerprint without logging raw arguments.
+The catalogue and argument grammars live together in
+[`src/baseline-rules.ts`](src/baseline-rules.ts). Add both positive and bypass
+regression cases in `test/baseline-rules.test.ts` when extending the library;
+unrecognized syntax should always fall through to review.
+
+## Configuration and review behavior
 
 `config.json` can be managed by Nix or another tool. `/permission` never writes
 to it. Changes are stored with mode `0600` in a separate `user.json` beside it;

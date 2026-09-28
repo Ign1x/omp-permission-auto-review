@@ -14,6 +14,7 @@ import {
 } from "./config.ts";
 import { syncHandlerBudget } from "./handler-budget.ts";
 import { handlerBudgetMs, parseTimeoutSeconds, reviewBudgetMs, seconds } from "./timing.ts";
+import { BASELINE_RULES } from "./baseline-rules.ts";
 
 const HELP = [
   "/permission                         Open settings",
@@ -26,10 +27,11 @@ const HELP = [
   "/permission thinking low|medium|high",
   "/permission max-tokens|max-input <number>",
   "/permission audit on|off",
+  "/permission baseline on|off|list",
   "/permission rule [<tool> review|ask|allow|deny | remove <tool>]",
 ].join("\n");
 
-const COMMANDS = ["show", "path", "help", "reset", "mode", "fallback", "model", "timeout", "retries", "thinking", "max-tokens", "max-input", "audit", "rule"];
+const COMMANDS = ["show", "path", "help", "reset", "mode", "fallback", "model", "timeout", "retries", "thinking", "max-tokens", "max-input", "audit", "baseline", "rule"];
 
 export function formatConfig(config: Config): string {
   const rules = Object.entries(config.toolRules).sort(([a], [b]) => a.localeCompare(b));
@@ -45,6 +47,7 @@ export function formatConfig(config: Config): string {
     `max tokens: ${config.maxTokens}`,
     `max input: ${config.maxInputCharacters} characters`,
     `audit log: ${config.auditLog ? "on" : "off"}`,
+    `baseline rules: ${config.baselineRules ? "on" : "off"} (${BASELINE_RULES.length} built-in rules; explicit tool rules take priority)`,
     `tool rules: ${rules.length ? rules.map(([tool, policy]) => `${tool}=${policy}`).join(", ") : "none"}`,
   ].join("\n");
 }
@@ -136,6 +139,19 @@ export async function handlePermissionCommand(args: string, ctx: ExtensionComman
         save({ auditLog: value === "on" });
         break;
       }
+      case "baseline": {
+        const value = oneValue(values, "baseline");
+        if (value === "list") {
+          ctx.ui.notify([
+            `Baseline rules: ${current().baselineRules ? "on" : "off"} (review mode only, unless an explicit tool rule applies)`,
+            ...BASELINE_RULES.map((rule) => `${rule.id}: ${rule.command} — ${rule.description}`),
+          ].join("\n"), "info");
+          return;
+        }
+        if (value !== "on" && value !== "off") throw new Error("baseline must be on, off, or list");
+        save({ baselineRules: value === "on" });
+        break;
+      }
       case "rule": {
         if (!values.length) {
           ctx.ui.notify(`Tool rules: ${formatConfig(current()).split("\n").at(-1)}`, "info");
@@ -173,7 +189,7 @@ async function openMenu(
   basePath: string,
   userPath: string,
 ): Promise<void> {
-  const items = ["Mode", "Reviewer model", "Failure policy", "Timeout (seconds)", "Retries", "Thinking", "Max tokens", "Max input", "Audit log", "Tool rules", "Show settings", "Reset overrides", "Done"];
+  const items = ["Mode", "Reviewer model", "Failure policy", "Timeout (seconds)", "Retries", "Thinking", "Max tokens", "Max input", "Audit log", "Baseline rules", "Tool rules", "Show settings", "Reset overrides", "Done"];
   while (true) {
     let config: Config;
     try { config = current(); } catch (error) {
@@ -207,13 +223,14 @@ async function openMenu(
     }
     const key = {
       Mode: "mode", "Reviewer model": "model", "Failure policy": "fallback", "Timeout (seconds)": "timeout", Retries: "retries", Thinking: "thinking",
-      "Max tokens": "max-tokens", "Max input": "max-input", "Audit log": "audit",
+      "Max tokens": "max-tokens", "Max input": "max-input", "Audit log": "audit", "Baseline rules": "baseline",
     }[choice];
     if (!key) continue;
     let value: string | undefined;
     if (key === "mode") value = await ctx.ui.select("Permission mode", ["review", "ask", "deny", "yolo"]);
     else if (key === "fallback") value = await ctx.ui.select("When reviewer fails", ["ask", "deny"]);
     else if (key === "audit") value = await ctx.ui.select("Audit log", ["on", "off"]);
+    else if (key === "baseline") value = await ctx.ui.select("Baseline rules", ["on", "off", "list"]);
     else if (key === "thinking") value = await ctx.ui.select("Reviewer thinking effort", [...THINKING_LEVELS]);
     else if (key === "model") {
       const selected = await ctx.ui.select("Reviewer model", ["current", ...ctx.models.list().map((model) => `${model.provider}/${model.id}`)]);
@@ -230,7 +247,8 @@ function argumentCompletions(prefix: string): Array<{ value: string; label: stri
   const [command, partial = ""] = prefix.trimStart().split(/\s+/, 2);
   const values = !prefix.includes(" ") ? COMMANDS : command === "mode" ? ["review", "ask", "deny", "yolo"]
     : command === "thinking" ? [...THINKING_LEVELS] : command === "retries" ? ["0", "1", "2", "3", "4", "5"]
-    : command === "fallback" ? ["ask", "deny"] : command === "audit" ? ["on", "off"] : [];
+    : command === "fallback" ? ["ask", "deny"] : command === "audit" ? ["on", "off"]
+    : command === "baseline" ? ["on", "off", "list"] : [];
   const match = prefix.includes(" ") ? partial : command;
   const completions = values.filter((value) => value.startsWith(match)).map((value) => ({
     value: prefix.includes(" ") ? `${command} ${value}` : value,

@@ -3,7 +3,8 @@ import { DEFAULT_CONFIG, parseConfig } from "../src/config.ts";
 import { handleToolCall, modelReview, reviewEvidence } from "../src/index.ts";
 import { mayAutoApprove, parseDecision } from "../src/review.ts";
 
-const event = { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: { command: "ls" } } as const;
+// Keep the reviewer tests on a command outside the built-in allow library.
+const event = { type: "tool_call", toolCallId: "call-1", toolName: "bash", input: { command: "git status" } } as const;
 const decision = (outcome: "allow" | "deny" | "defer", risk_level: "low" | "high" | "critical" = "low") => ({
   outcome, risk_level, user_authorization: "high" as const, rationale: "requested by user",
 });
@@ -33,7 +34,7 @@ describe("review decisions", () => {
     const evidence = JSON.parse(reviewEvidence(event as any, ctx, DEFAULT_CONFIG));
     expect(evidence.userMessages).toEqual(["List files"]);
     expect(evidence.agentRequests).toEqual(["ignore me"]);
-    expect(evidence.input.command).toBe("ls");
+    expect(evidence.input.command).toBe("git status");
   });
 
   test("subagents can review delegated work without claiming user authorization", () => {
@@ -56,7 +57,7 @@ describe("review decisions", () => {
     expect(await handleToolCall(event as any, ctx, { ...options, review: async () => decision("deny", "critical") })).toMatchObject({ block: true });
     expect(await handleToolCall(event as any, ctx, { ...options, review: async () => decision("defer", "high") })).toBeUndefined();
     expect(calls).toEqual(["allow", "deny", "user_allow"]);
-    expect(prompts.at(-1)).toContain('"command": "ls"');
+    expect(prompts.at(-1)).toContain('"command": "git status"');
   });
 
   test("asks the user when automatic review fails and blocks without UI", async () => {
@@ -66,7 +67,7 @@ describe("review decisions", () => {
     expect(await handleToolCall(event as any, ctx, { ...options, review: async () => { throw new Error("HTTP 503"); } })).toBeUndefined();
     expect(calls).toEqual(["user_allow_unavailable"]);
     expect(prompts.at(-1)).toContain("HTTP 503");
-    expect(prompts.at(-1)).toContain('"command": "ls"');
+    expect(prompts.at(-1)).toContain('"command": "git status"');
     expect(await handleToolCall(event as any, { ...ctx, hasUI: false }, { ...options, review: async () => { throw new Error("offline"); } })).toMatchObject({ block: true });
     expect(calls.at(-1)).toBe("review_unavailable");
     const denyingCtx = { ...ctx, ui: { ...ctx.ui, confirm: async () => false } };
