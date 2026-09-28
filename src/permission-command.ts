@@ -30,7 +30,7 @@ export function formatConfig(config: Config): string {
     `mode: ${config.mode}`,
     `reviewer: ${config.model}`,
     `failure: ${config.failurePolicy}`,
-    `timeout: ${config.timeoutMs} ms (effective cap: 25000 ms)`,
+    `timeout: ${config.timeoutMs} ms (OMP extensionHandlers.toolCallTimeoutMs must be at least ${config.timeoutMs + 5000} ms)`,
     `max tokens: ${config.maxTokens}`,
     `max input: ${config.maxInputCharacters} characters`,
     `audit log: ${config.auditLog ? "on" : "off"}`,
@@ -192,7 +192,7 @@ async function openMenu(
     else if (key === "model") {
       const selected = await ctx.ui.select("Reviewer model", ["current", ...ctx.models.list().map((model) => `${model.provider}/${model.id}`)]);
       value = selected;
-    } else value = await ctx.ui.input(key, key === "timeout" ? "milliseconds (up to 25000 effective)" : "positive integer");
+    } else value = await ctx.ui.input(key, key === "timeout" ? "milliseconds; also increase OMP extensionHandlers.toolCallTimeoutMs for longer reviews" : "positive integer");
     if (!value) continue;
     await handlePermissionCommand(`${key} ${value}`, ctx, { basePath, userPath });
   }

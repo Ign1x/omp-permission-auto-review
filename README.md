@@ -83,8 +83,25 @@ as untrusted context, not as evidence of user authorization. An oversized
 request, invalid configuration, missing credentials, timeout, or malformed
 reviewer output asks for manual approval in an interactive session and blocks
 in headless mode. Transient reviewer errors are retried once within the review
-timeout. The timeout is capped at 25 seconds to stay within OMP's 30-second
-extension handler limit.
+timeout. The configured timeout bounds authentication and all attempts, including
+providers that do not settle promptly on cancellation. Timeouts are reported as
+`reviewer timed out` with the model and attempt count; other provider failures
+include elapsed time. No 25-second cap is applied.
+
+The default remains 20 seconds to fit OMP's default 30-second extension handler
+budget. For slower providers, increase **both** limits. For example, run
+`/permission timeout 60000` and add this to OMP's `config.yml`, then restart OMP:
+
+```yaml
+extensionHandlers:
+  toolCallTimeoutMs: 70000
+```
+
+Leave at least 5 seconds between the reviewer timeout and OMP's handler timeout
+for setup and fallback. Time spent awaiting OMP's manual approval dialog does not
+count against the handler budget. If OMP's budget expires first, OMP blocks the
+call before the extension can offer fallback approval. `/permission show` displays
+the required minimum handler budget, but does not change OMP's settings.
 Requests labeled `defer`, and high-risk allows without enough user
 authorization, ask the user in an interactive session and block in headless
 mode. Critical-risk decisions always deny.

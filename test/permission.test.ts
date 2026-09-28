@@ -64,6 +64,10 @@ describe("permission settings", () => {
     expect(loadConfig(basePath, userPath).toolRules).toEqual({});
     await handlePermissionCommand("show", ctx, options);
     expect(notices.at(-1)?.message).toContain("mode: yolo");
+    await handlePermissionCommand("timeout 60000", ctx, options);
+    expect(loadConfig(basePath, userPath).timeoutMs).toBe(60000);
+    expect(notices.at(-1)?.message).toContain("extensionHandlers.toolCallTimeoutMs must be at least 65000 ms");
+    expect(notices.at(-1)?.message).not.toContain("effective cap");
     await handlePermissionCommand("path", ctx, options);
     expect(notices.at(-1)?.message).toContain(userPath);
     await handlePermissionCommand("model unavailable", ctx, options);

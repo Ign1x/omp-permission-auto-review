@@ -50,35 +50,53 @@ export async function modelReview(
   const evidence = reviewEvidence(event, ctx, config);
   const model = config.model === "current" ? ctx.model : ctx.models.resolve(config.model);
   if (!model) throw new Error(`review model is unavailable: ${config.model}`);
-  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-  if (!auth.ok) throw new Error(`review model authentication failed: ${auth.error}`);
   const controller = new AbortController();
-  // OMP stops extension handlers after 30 seconds, so leave time for fallback approval.
-  const timer = setTimeout(() => controller.abort(), Math.min(config.timeoutMs, 25000));
+  const startedAt = performance.now();
+  const modelName = `${model.provider}/${model.id}`;
+  let attempts = 0;
+  // Bound authentication and all attempts, even if the SDK ignores cancellation.
+  // Longer budgets also require increasing OMP's extensionHandlers.toolCallTimeoutMs.
+  let timer: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(`reviewer timed out after ${config.timeoutMs} ms (model: ${modelName}, attempts: ${attempts})`);
+      // Settle the deadline first: SDK abort handlers may resolve synchronously.
+      reject(error);
+      controller.abort(error);
+    }, config.timeoutMs);
+  });
   try {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const result = await complete(model, {
-        systemPrompt: [REVIEWER_SYSTEM_PROMPT],
-        messages: [{ role: "user", content: evidence, timestamp: Date.now() }],
-      }, {
-        apiKey: auth.apiKey,
-        headers: auth.headers,
-        signal: controller.signal,
-        maxTokens: config.maxTokens,
-      });
-      if (result.stopReason === "stop") {
-        const text = result.content.filter((part) => part.type === "text").map((part) => part.text).join("");
-        return parseDecision(text);
+    const review = async (): Promise<Decision> => {
+      const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+      controller.signal.throwIfAborted();
+      if (!auth.ok) throw new Error(`review model authentication failed: ${auth.error}`);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        attempts++;
+        const result = await complete(model, {
+          systemPrompt: [REVIEWER_SYSTEM_PROMPT],
+          messages: [{ role: "user", content: evidence, timestamp: Date.now() }],
+        }, {
+          apiKey: auth.apiKey,
+          headers: auth.headers,
+          signal: controller.signal,
+          maxTokens: config.maxTokens,
+        });
+        controller.signal.throwIfAborted();
+        if (result.stopReason === "stop") {
+          const text = result.content.filter((part) => part.type === "text").map((part) => part.text).join("");
+          return parseDecision(text);
+        }
+        const status = result.errorStatus;
+        if (attempt === 0 && result.stopReason === "error" && !controller.signal.aborted &&
+            (status === undefined || status === 408 || status === 429 || status >= 500)) continue;
+        const detail = result.errorMessage?.replace(/\s+/g, " ").slice(0, 300);
+        throw new Error(`reviewer stopped: ${result.stopReason}${status ? ` (HTTP ${status})` : ""}${detail ? `: ${detail}` : ""} (model: ${modelName}, elapsed: ${Math.round(performance.now() - startedAt)} ms, attempts: ${attempts})`);
       }
-      const status = result.errorStatus;
-      if (attempt === 0 && result.stopReason === "error" && !controller.signal.aborted &&
-          (status === undefined || status === 408 || status === 429 || status >= 500)) continue;
-      const detail = result.errorMessage?.replace(/\s+/g, " ").slice(0, 300);
-      throw new Error(`reviewer stopped: ${result.stopReason}${status ? ` (HTTP ${status})` : ""}${detail ? `: ${detail}` : ""}`);
-    }
-    throw new Error("reviewer retry exhausted");
+      throw new Error("reviewer retry exhausted");
+    };
+    return await Promise.race([review(), deadline]);
   } finally {
-    clearTimeout(timer);
+    clearTimeout(timer!);
   }
 }
 
