@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, parseConfig, resetConfig, saveConfig } from "../src/config.ts";
 import { handlePermissionCommand, registerPermissionCommand } from "../src/permission-command.ts";
+import { parseTimeoutSeconds } from "../src/timing.ts";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -38,6 +39,18 @@ describe("permission settings", () => {
     expect(() => parseConfig({ toolRules: { bash: "maybe" } })).toThrow("invalid tool rule");
     expect(() => parseConfig(JSON.parse('{"toolRules":{"__proto__":"allow"}}'))).toThrow("invalid tool rule");
     expect(() => parseConfig(JSON.parse('{"__proto__":{}}'))).toThrow("unknown config key");
+    for (const maxRetries of [-1, 1.5, 6, "2"]) expect(() => parseConfig({ maxRetries })).toThrow("maxRetries");
+    expect(() => parseConfig({ reasoning: "off" })).toThrow("reasoning");
+    expect(parseConfig({ timeoutMs: 120000 })).toMatchObject({ timeoutMs: 120000, maxRetries: 2, reasoning: "low" });
+  });
+
+  test("timeout accepts seconds and rejects old millisecond command values", () => {
+    expect(parseTimeoutSeconds("60")).toBe(60000);
+    expect(parseTimeoutSeconds("60s")).toBe(60000);
+    expect(parseTimeoutSeconds("0.5s")).toBe(500);
+    for (const value of ["60000", "60ms", "0", "-1", "Infinity", "0.0001", "301"]) {
+      expect(() => parseTimeoutSeconds(value)).toThrow("seconds");
+    }
   });
 
   test("command edits settings, shows paths, and resets overrides", async () => {
@@ -56,7 +69,7 @@ describe("permission settings", () => {
     await handlePermissionCommand("fallback deny", ctx, options);
     await handlePermissionCommand("rule bash ask", ctx, options);
     await handlePermissionCommand("audit off", ctx, options);
-    await handlePermissionCommand("timeout 18000", ctx, options);
+    await handlePermissionCommand("timeout 18", ctx, options);
     expect(loadConfig(basePath, userPath)).toMatchObject({
       mode: "yolo", failurePolicy: "deny", toolRules: { bash: "ask" }, auditLog: false, timeoutMs: 18000,
     });
@@ -64,10 +77,17 @@ describe("permission settings", () => {
     expect(loadConfig(basePath, userPath).toolRules).toEqual({});
     await handlePermissionCommand("show", ctx, options);
     expect(notices.at(-1)?.message).toContain("mode: yolo");
-    await handlePermissionCommand("timeout 60000", ctx, options);
+    await handlePermissionCommand("timeout 60s", ctx, options);
     expect(loadConfig(basePath, userPath).timeoutMs).toBe(60000);
-    expect(notices.at(-1)?.message).toContain("extensionHandlers.toolCallTimeoutMs must be at least 65000 ms");
+    expect(notices.at(-1)?.message).toContain("OMP handler budget: at least 187 seconds");
     expect(notices.at(-1)?.message).not.toContain("effective cap");
+    expect(notices.at(-1)?.message).toContain("thinking: low");
+    await handlePermissionCommand("retries 0", ctx, options);
+    expect(loadConfig(basePath, userPath).maxRetries).toBe(0);
+    await handlePermissionCommand("thinking high", ctx, options);
+    expect(loadConfig(basePath, userPath).reasoning).toBe("high");
+    await handlePermissionCommand("retries 6", ctx, options);
+    expect(notices.at(-1)?.type).toBe("error");
     await handlePermissionCommand("path", ctx, options);
     expect(notices.at(-1)?.message).toContain(userPath);
     await handlePermissionCommand("model unavailable", ctx, options);
@@ -111,5 +131,27 @@ describe("permission settings", () => {
     } as any;
     await handlePermissionCommand("", ctx, { basePath, userPath });
     expect(loadConfig(basePath, userPath).toolRules).toEqual({ bash: "allow" });
+  });
+
+  test("interactive timeout input and help show units and expose retries", async () => {
+    const options = paths();
+    const choices = ["Timeout (seconds)", "Retries", "Thinking", "low", "Done"];
+    const inputs = ["45", "2"];
+    const fields: string[] = [];
+    const notices: string[] = [];
+    const ctx = { hasUI: true, ui: {
+      select: async () => choices.shift(),
+      input: async (title: string, placeholder: string) => { fields.push(`${title}: ${placeholder}`); return inputs.shift(); },
+      notify: (message: string) => notices.push(message),
+    } } as any;
+    await handlePermissionCommand("", ctx, options);
+    expect(loadConfig(options.basePath, options.userPath)).toMatchObject({ timeoutMs: 45000, maxRetries: 2, reasoning: "low" });
+    expect(fields[0]).toContain("Timeout per attempt (seconds)");
+    expect(fields[0]).toContain("60s");
+    expect(fields[0]).not.toContain("milliseconds");
+    expect(fields[1]).toContain("3 attempts total");
+    await handlePermissionCommand("help", ctx, options);
+    expect(notices.at(-1)).toContain("timeout <seconds>");
+    expect(notices.at(-1)).toContain("retries <0-5>");
   });
 });

@@ -6,11 +6,15 @@ import { getAgentDir } from "@oh-my-pi/pi-coding-agent";
 export type Mode = "review" | "ask" | "deny" | "yolo";
 export type ToolPolicy = "review" | "ask" | "allow" | "deny";
 export type FailurePolicy = "ask" | "deny";
+export const THINKING_LEVELS = ["low", "medium", "high"] as const;
+export type ThinkingLevel = typeof THINKING_LEVELS[number];
 
 export interface Config {
   model: string;
   maxTokens: number;
   timeoutMs: number;
+  maxRetries: number;
+  reasoning: ThinkingLevel;
   maxInputCharacters: number;
   mode: Mode;
   failurePolicy: FailurePolicy;
@@ -22,6 +26,8 @@ export const DEFAULT_CONFIG: Config = {
   model: "current",
   maxTokens: 4096,
   timeoutMs: 20000,
+  maxRetries: 2,
+  reasoning: "low",
   maxInputCharacters: 12000,
   mode: "review",
   failurePolicy: "ask",
@@ -62,6 +68,10 @@ export function parseConfig(value: unknown): Config {
   if (config.maxTokens > 16384 || config.maxInputCharacters > 100000 || config.timeoutMs > 300000) {
     throw new Error("config exceeds supported limits");
   }
+  if (!Number.isSafeInteger(config.maxRetries) || config.maxRetries < 0 || config.maxRetries > 5) {
+    throw new Error("maxRetries must be an integer from 0 to 5");
+  }
+  if (!THINKING_LEVELS.includes(config.reasoning)) throw new Error("reasoning must be low, medium, or high");
   if (!["review", "ask", "deny", "yolo"].includes(config.mode)) throw new Error("invalid mode");
   if (!["ask", "deny"].includes(config.failurePolicy)) throw new Error("invalid failurePolicy");
   if (typeof config.auditLog !== "boolean") throw new Error("auditLog must be a boolean");

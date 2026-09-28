@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { completeSimple } from "@oh-my-pi/pi-ai";
+import { completeSimple, type Effort } from "@oh-my-pi/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@oh-my-pi/pi-coding-agent";
 import { configPath, loadConfig, type Config } from "./config.ts";
 import { registerPermissionCommand } from "./permission-command.ts";
+import { syncHandlerBudget } from "./handler-budget.ts";
+import { RETRY_DELAY_MS, seconds } from "./timing.ts";
 import { mayAutoApprove, parseDecision, REVIEWER_SYSTEM_PROMPT, type Decision } from "./review.ts";
 
 function userText(content: unknown): string {
@@ -50,28 +52,26 @@ export async function modelReview(
   const evidence = reviewEvidence(event, ctx, config);
   const model = config.model === "current" ? ctx.model : ctx.models.resolve(config.model);
   if (!model) throw new Error(`review model is unavailable: ${config.model}`);
-  const controller = new AbortController();
   const startedAt = performance.now();
   const modelName = `${model.provider}/${model.id}`;
-  let attempts = 0;
-  // Bound authentication and all attempts, even if the SDK ignores cancellation.
-  // Longer budgets also require increasing OMP's extensionHandlers.toolCallTimeoutMs.
-  let timer: ReturnType<typeof setTimeout>;
-  const deadline = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => {
-      const error = new Error(`reviewer timed out after ${config.timeoutMs} ms (model: ${modelName}, attempts: ${attempts})`);
-      // Settle the deadline first: SDK abort handlers may resolve synchronously.
-      reject(error);
-      controller.abort(error);
-    }, config.timeoutMs);
-  });
-  try {
-    const review = async (): Promise<Decision> => {
-      const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-      controller.signal.throwIfAborted();
-      if (!auth.ok) throw new Error(`review model authentication failed: ${auth.error}`);
-      for (let attempt = 0; attempt < 2; attempt++) {
-        attempts++;
+  const maxAttempts = config.maxRetries + 1;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    // Each attempt gets its own deadline and cancellation signal, including auth.
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        const error = new Error(`reviewer timed out after ${seconds(config.timeoutMs)}`);
+        reject(error);
+        controller.abort(error);
+      }, config.timeoutMs);
+    });
+    let failure: unknown;
+    try {
+      const review = async (): Promise<Decision> => {
+        const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+        controller.signal.throwIfAborted();
+        if (!auth.ok) throw new PermanentReviewError(`review model authentication failed: ${auth.error}`);
         const result = await complete(model, {
           systemPrompt: [REVIEWER_SYSTEM_PROMPT],
           messages: [{ role: "user", content: evidence, timestamp: Date.now() }],
@@ -80,25 +80,41 @@ export async function modelReview(
           headers: auth.headers,
           signal: controller.signal,
           maxTokens: config.maxTokens,
+          ...(model.reasoning ? { reasoning: config.reasoning as Effort } : {}),
         });
         controller.signal.throwIfAborted();
         if (result.stopReason === "stop") {
           const text = result.content.filter((part) => part.type === "text").map((part) => part.text).join("");
+          // All valid decisions are final, including deny and defer.
           return parseDecision(text);
         }
         const status = result.errorStatus;
-        if (attempt === 0 && result.stopReason === "error" && !controller.signal.aborted &&
-            (status === undefined || status === 408 || status === 429 || status >= 500)) continue;
         const detail = result.errorMessage?.replace(/\s+/g, " ").slice(0, 300);
-        throw new Error(`reviewer stopped: ${result.stopReason}${status ? ` (HTTP ${status})` : ""}${detail ? `: ${detail}` : ""} (model: ${modelName}, elapsed: ${Math.round(performance.now() - startedAt)} ms, attempts: ${attempts})`);
-      }
-      throw new Error("reviewer retry exhausted");
-    };
-    return await Promise.race([review(), deadline]);
-  } finally {
-    clearTimeout(timer!);
+        const reason = `reviewer stopped: ${result.stopReason}${status ? ` (HTTP ${status})` : ""}${detail ? `: ${detail}` : ""}`;
+        if (status !== undefined && status >= 400 && status < 500 && ![408, 429].includes(status)) {
+          throw new PermanentReviewError(reason);
+        }
+        throw new Error(reason);
+      };
+      return await Promise.race([review(), deadline]);
+    } catch (error) {
+      failure = error;
+    } finally {
+      clearTimeout(timer!);
+    }
+    const reason = failure instanceof Error ? failure.message : String(failure);
+    if (failure instanceof PermanentReviewError || attempt === maxAttempts) {
+      throw new Error(`reviewer unavailable after ${attempt} attempt(s) (model: ${modelName}, elapsed: ${seconds(performance.now() - startedAt)}): ${reason}`);
+    }
+    if (ctx.hasUI) {
+      ctx.ui.notify(`Review attempt ${attempt}/${maxAttempts} failed: ${reason}\nRetrying in ${seconds(RETRY_DELAY_MS)} (${attempt}/${config.maxRetries} retries).`, "warning");
+    }
+    await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
   }
+  throw new Error("reviewer retry exhausted");
 }
+
+class PermanentReviewError extends Error {}
 
 function audit(event: ToolCallEvent, outcome: string, detail?: string): void {
   const path = join(dirname(configPath()), "logs", "review.jsonl");
@@ -186,5 +202,8 @@ export async function handleToolCall(
 
 export default function ompPermissionAutoReview(omp: ExtensionAPI): void {
   registerPermissionCommand(omp);
+  omp.on("session_start", (_event, ctx) => syncHandlerBudget(ctx));
+  omp.on("before_agent_start", (_event, ctx) => syncHandlerBudget(ctx));
+  omp.on("turn_start", (_event, ctx) => syncHandlerBudget(ctx));
   omp.on("tool_call", (event, ctx) => handleToolCall(event, ctx));
 }

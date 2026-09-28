@@ -5,11 +5,15 @@ import {
   loadConfig,
   resetConfig,
   saveConfig,
+  THINKING_LEVELS,
   type Config,
   type FailurePolicy,
   type Mode,
   type ToolPolicy,
+  type ThinkingLevel,
 } from "./config.ts";
+import { syncHandlerBudget } from "./handler-budget.ts";
+import { handlerBudgetMs, parseTimeoutSeconds, reviewBudgetMs, seconds } from "./timing.ts";
 
 const HELP = [
   "/permission                         Open settings",
@@ -17,12 +21,15 @@ const HELP = [
   "/permission mode review|ask|deny|yolo",
   "/permission fallback ask|deny",
   "/permission model <provider/model|current>",
-  "/permission timeout|max-tokens|max-input <number>",
+  "/permission timeout <seconds>       Per attempt, e.g. 60 or 60s",
+  "/permission retries <0-5>           Retries after the first attempt",
+  "/permission thinking low|medium|high",
+  "/permission max-tokens|max-input <number>",
   "/permission audit on|off",
   "/permission rule [<tool> review|ask|allow|deny | remove <tool>]",
 ].join("\n");
 
-const COMMANDS = ["show", "path", "help", "reset", "mode", "fallback", "model", "timeout", "max-tokens", "max-input", "audit", "rule"];
+const COMMANDS = ["show", "path", "help", "reset", "mode", "fallback", "model", "timeout", "retries", "thinking", "max-tokens", "max-input", "audit", "rule"];
 
 export function formatConfig(config: Config): string {
   const rules = Object.entries(config.toolRules).sort(([a], [b]) => a.localeCompare(b));
@@ -30,7 +37,11 @@ export function formatConfig(config: Config): string {
     `mode: ${config.mode}`,
     `reviewer: ${config.model}`,
     `failure: ${config.failurePolicy}`,
-    `timeout: ${config.timeoutMs} ms (OMP extensionHandlers.toolCallTimeoutMs must be at least ${config.timeoutMs + 5000} ms)`,
+    `thinking: ${config.reasoning}`,
+    `timeout per attempt: ${seconds(config.timeoutMs)}`,
+    `retries: ${config.maxRetries} (${config.maxRetries + 1} attempts maximum)`,
+    `maximum review wait: ${seconds(reviewBudgetMs(config))}`,
+    `OMP handler budget: at least ${seconds(handlerBudgetMs(config))} (adjusted automatically for this session)`,
     `max tokens: ${config.maxTokens}`,
     `max input: ${config.maxInputCharacters} characters`,
     `audit log: ${config.auditLog ? "on" : "off"}`,
@@ -96,12 +107,26 @@ export async function handlePermissionCommand(args: string, ctx: ExtensionComman
         save({ model: value });
         break;
       }
+      case "thinking": {
+        const value = oneValue(values, "thinking");
+        if (!THINKING_LEVELS.includes(value as ThinkingLevel)) throw new Error("thinking must be low, medium, or high");
+        save({ reasoning: value as ThinkingLevel });
+        break;
+      }
       case "timeout":
+        save({ timeoutMs: parseTimeoutSeconds(oneValue(values, "timeout (seconds)")) });
+        break;
+      case "retries": {
+        const value = oneValue(values, "retries");
+        if (!/^[0-5]$/.test(value)) throw new Error("retries must be an integer from 0 to 5");
+        save({ maxRetries: Number(value) });
+        break;
+      }
       case "max-tokens":
       case "max-input": {
         const value = oneValue(values, command);
         if (!/^\d+$/.test(value)) throw new Error(`${command} must be a positive integer`);
-        const key = command === "timeout" ? "timeoutMs" : command === "max-tokens" ? "maxTokens" : "maxInputCharacters";
+        const key = command === "max-tokens" ? "maxTokens" : "maxInputCharacters";
         save({ [key]: Number(value) });
         break;
       }
@@ -148,7 +173,7 @@ async function openMenu(
   basePath: string,
   userPath: string,
 ): Promise<void> {
-  const items = ["Mode", "Reviewer model", "Failure policy", "Timeout", "Max tokens", "Max input", "Audit log", "Tool rules", "Show settings", "Reset overrides", "Done"];
+  const items = ["Mode", "Reviewer model", "Failure policy", "Timeout (seconds)", "Retries", "Thinking", "Max tokens", "Max input", "Audit log", "Tool rules", "Show settings", "Reset overrides", "Done"];
   while (true) {
     let config: Config;
     try { config = current(); } catch (error) {
@@ -181,7 +206,7 @@ async function openMenu(
       continue;
     }
     const key = {
-      Mode: "mode", "Reviewer model": "model", "Failure policy": "fallback", Timeout: "timeout",
+      Mode: "mode", "Reviewer model": "model", "Failure policy": "fallback", "Timeout (seconds)": "timeout", Retries: "retries", Thinking: "thinking",
       "Max tokens": "max-tokens", "Max input": "max-input", "Audit log": "audit",
     }[choice];
     if (!key) continue;
@@ -189,10 +214,13 @@ async function openMenu(
     if (key === "mode") value = await ctx.ui.select("Permission mode", ["review", "ask", "deny", "yolo"]);
     else if (key === "fallback") value = await ctx.ui.select("When reviewer fails", ["ask", "deny"]);
     else if (key === "audit") value = await ctx.ui.select("Audit log", ["on", "off"]);
+    else if (key === "thinking") value = await ctx.ui.select("Reviewer thinking effort", [...THINKING_LEVELS]);
     else if (key === "model") {
       const selected = await ctx.ui.select("Reviewer model", ["current", ...ctx.models.list().map((model) => `${model.provider}/${model.id}`)]);
       value = selected;
-    } else value = await ctx.ui.input(key, key === "timeout" ? "milliseconds; also increase OMP extensionHandlers.toolCallTimeoutMs for longer reviews" : "positive integer");
+    } else if (key === "timeout") value = await ctx.ui.input("Timeout per attempt (seconds)", `Current: ${seconds(config.timeoutMs)}; e.g. 60 or 60s (up to 300 seconds)`);
+    else if (key === "retries") value = await ctx.ui.input("Retries after the first attempt", `Current: ${config.maxRetries}; 0–5 (2 means 3 attempts total)`);
+    else value = await ctx.ui.input(key, "positive integer");
     if (!value) continue;
     await handlePermissionCommand(`${key} ${value}`, ctx, { basePath, userPath });
   }
@@ -201,6 +229,7 @@ async function openMenu(
 function argumentCompletions(prefix: string): Array<{ value: string; label: string; description: string }> | null {
   const [command, partial = ""] = prefix.trimStart().split(/\s+/, 2);
   const values = !prefix.includes(" ") ? COMMANDS : command === "mode" ? ["review", "ask", "deny", "yolo"]
+    : command === "thinking" ? [...THINKING_LEVELS] : command === "retries" ? ["0", "1", "2", "3", "4", "5"]
     : command === "fallback" ? ["ask", "deny"] : command === "audit" ? ["on", "off"] : [];
   const match = prefix.includes(" ") ? partial : command;
   const completions = values.filter((value) => value.startsWith(match)).map((value) => ({
@@ -215,6 +244,9 @@ export function registerPermissionCommand(omp: ExtensionAPI): void {
   omp.registerCommand("permission", {
     description: "Configure automatic tool permission review",
     getArgumentCompletions: argumentCompletions,
-    handler: (args, ctx) => handlePermissionCommand(args, ctx),
+    handler: async (args, ctx) => {
+      await handlePermissionCommand(args, ctx);
+      syncHandlerBudget(ctx);
+    },
   });
 }

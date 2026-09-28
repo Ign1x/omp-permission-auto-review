@@ -32,6 +32,8 @@ path under the active OMP profile's agent directory:
   "model": "gateway/deepseek-v4.1-flash",
   "maxTokens": 4096,
   "timeoutMs": 20000,
+  "maxRetries": 2,
+  "reasoning": "low",
   "maxInputCharacters": 12000,
   "mode": "review",
   "failurePolicy": "ask",
@@ -44,7 +46,8 @@ path under the active OMP profile's agent directory:
 
 Run `/permission` in OMP's interactive TUI to edit settings. Changes take
 effect on the next tool call, including in other running sessions. The menu
-covers review mode, reviewer model, failure handling, timeout, token/input
+covers review mode, reviewer model, thinking effort, retries, failure handling,
+timeout in seconds, token/input
 limits, audit logging, and exact tool-name rules. The same settings can be
 changed directly:
 
@@ -54,7 +57,9 @@ changed directly:
 /permission mode review|ask|deny|yolo
 /permission fallback ask|deny
 /permission model current|provider/model
-/permission timeout 20000
+/permission timeout 20
+/permission retries 2
+/permission thinking low
 /permission max-tokens 4096
 /permission max-input 12000
 /permission audit on|off
@@ -82,26 +87,46 @@ recent user-authored messages. Subagent task messages are included separately
 as untrusted context, not as evidence of user authorization. An oversized
 request, invalid configuration, missing credentials, timeout, or malformed
 reviewer output asks for manual approval in an interactive session and blocks
-in headless mode. Transient reviewer errors are retried once within the review
-timeout. The configured timeout bounds authentication and all attempts, including
-providers that do not settle promptly on cancellation. Timeouts are reported as
-`reviewer timed out` with the model and attempt count; other provider failures
-include elapsed time. No 25-second cap is applied.
+in headless mode.
 
-The default remains 20 seconds to fit OMP's default 30-second extension handler
-budget. For slower providers, increase **both** limits. For example, run
-`/permission timeout 60000` and add this to OMP's `config.yml`, then restart OMP:
+Thinking stays enabled for reasoning-capable models, with `low` requested by
+default. `/permission thinking low|medium|high` changes the requested effort;
+actual support depends on the model/provider. Non-reasoning models omit the effort.
 
-```yaml
-extensionHandlers:
-  toolCallTimeoutMs: 70000
-```
+The default is **2 retries after the first attempt**, for up to 3 attempts.
+`/permission retries 0` disables retries; supported values are 0–5. Each attempt
+gets its own full timeout and cancellation signal, including authentication.
+An attempt is one reviewer SDK call; any SDK-internal transport retries share
+that attempt's timeout rather than starting a new budget.
+Timeouts, provider aborts, connection failures, HTTP 408/429/5xx and missing,
+truncated or invalid decisions are retried, with a 1-second delay between attempts.
+A valid `allow`, `deny` or `defer` ends review immediately. A denial is never retried
+or converted to manual approval. Invalid configuration, missing credentials and
+other HTTP 4xx errors fail immediately because repeating the request cannot fix
+them. Exhausted retries use the configured failure policy (default: ask).
 
-Leave at least 5 seconds between the reviewer timeout and OMP's handler timeout
-for setup and fallback. Time spent awaiting OMP's manual approval dialog does not
-count against the handler budget. If OMP's budget expires first, OMP blocks the
-call before the extension can offer fallback approval. `/permission show` displays
-the required minimum handler budget, but does not change OMP's settings.
+The timeout menu, command, notices and diagnostics use **seconds**. For example,
+`/permission timeout 60` or `/permission timeout 60s` gives every attempt 60 seconds.
+The supported range is greater than 0 and at most 300 seconds. Existing JSON files
+keep their `timeoutMs` field unchanged for compatibility; old command values such
+as `/permission timeout 60000` are rejected with a seconds-specific hint.
+
+With a 60-second timeout and 2 retries, the maximum review wait is 182 seconds:
+3 attempts × 60 seconds + 2 retry delays × 1 second. `/permission show` displays
+both this total and the required OMP handler budget, including 5 seconds of margin.
+The extension raises `extensionHandlers.toolCallTimeoutMs` in the active session
+before tool dispatch (on session start, agent start, and each turn), and after
+`/permission` commands. This runtime override never lowers a larger budget or
+writes to managed/user OMP configuration. Changes from other sessions are picked
+up at the next turn; an already running review keeps its original configuration.
+Time awaiting OMP's manual approval dialog does not count against the handler budget.
+
+Timeouts are bounded even when the provider does not settle after cancellation.
+Late responses from expired attempts cannot approve the tool. Final error messages
+include the attempt count, model, elapsed seconds, and last failure; retry notices
+show progress. After upgrading the extension, **restart OMP** to replace code already
+loaded in running sessions.
+
 Requests labeled `defer`, and high-risk allows without enough user
 authorization, ask the user in an interactive session and block in headless
 mode. Critical-risk decisions always deny.
