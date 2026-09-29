@@ -56,18 +56,20 @@ describe("profiles and configuration layers", () => {
   });
   test("menu separates presets from advanced settings and exposes completion", async () => {
     const { ctx, paths } = fixture();
-    const choices = ["Permission profile", "Inspect project", "Advanced", "Retries", "Done"];
+    const choices = ["Profile ·", "Inspect project", "Advanced", "Retries ·", "Back", "Done"];
     const menus: string[][] = [];
     ctx.ui.select = async (_title: string, items: Array<string | { label: string }>) => {
       const labels = items.map((i) => typeof i === "string" ? i : i.label);
       menus.push(labels);
       const next = choices.shift();
-      expect(labels).toContain(next!);
-      return next;
+      const selected = labels.find((label) => label.includes(next!));
+      expect(selected).toBeDefined();
+      return selected;
     };
     ctx.ui.input = async () => "0";
     await handlePermissionCommand("", ctx, paths);
-    expect(menus[0]).not.toContain("Retries");
+    expect(menus[0]).toHaveLength(8);
+    expect(menus[0].some((label) => label.includes("Retries"))).toBe(false);
     expect(loadConfig(paths.basePath, paths.userPath)).toMatchObject({ profile: "inspect", maxRetries: 0 });
     let registered: any;
     registerPermissionCommand({ registerCommand: (_name: string, options: any) => { registered = options; } } as any);

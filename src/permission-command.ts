@@ -1,4 +1,6 @@
-import { dirname, join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { parseCommands } from "./command-parser.ts";
+import { dirname, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@oh-my-pi/pi-coding-agent";
 import {
   configPath,
@@ -81,9 +83,16 @@ export function formatConfig(config: Config): string {
   ].join("\n");
 }
 
+function describeScopedRule(rule: ScopedRule): string {
+  return rule.kind === "command"
+    ? `${rule.decision} · ${rule.prefix.join(" ")} …\nFolder: ${rule.cwd}\nMatches this prefix, including trailing arguments.`
+    : `${rule.decision} · ${rule.tool} files\nFolder: ${rule.root} (including subfolders)`;
+}
+
 interface Paths {
   basePath?: string;
   userPath?: string;
+  compactFeedback?: boolean;
 }
 
 export async function handlePermissionCommand(args: string, ctx: ExtensionCommandContext, paths: Paths = {}): Promise<void> {
@@ -200,7 +209,7 @@ export async function handlePermissionCommand(args: string, ctx: ExtensionComman
           // Validate the complete candidate before displaying or saving it.
           const { parseConfig } = await import("./config.ts");
           parseConfig({ ...current(), scopedRules: [...rules, rule] });
-          if (ctx.hasUI && rule.decision === "allow" && !await ctx.ui.confirm("Save scoped permission?", JSON.stringify(rule, null, 2))) return;
+          if (ctx.hasUI && rule.decision === "allow" && !await ctx.ui.confirm("󰒃  Save scoped permission?", `${describeScopedRule(rule)}\nSave to: ${saveScope(ctx)}`)) return;
           save({ scopedRules: [...current().scopedRules, rule] });
         } else throw new Error("usage: /permission scoped list|remove <id>|add <JSON rule>");
         break;
@@ -302,7 +311,7 @@ export async function handlePermissionCommand(args: string, ctx: ExtensionComman
       default:
         throw new Error(`unknown setting: ${command}\n${HELP}`);
     }
-    ctx.ui.notify(`Permission settings updated.\n${formatConfig(current())}`, "info");
+    ctx.ui.notify(paths.compactFeedback ? `\uf00c Saved to ${saveScope(ctx)} · ${command}` : `Permission settings updated.\n${formatConfig(current())}`, "info");
   } catch (error) {
     ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
   }
@@ -319,35 +328,100 @@ async function openMenu(
   basePath: string,
   userPath: string,
 ): Promise<void> {
-  const advancedItems = ["Mode", "Reviewer model", "Failure policy", "Timeout (seconds)", "Retries", "Thinking", "Max tokens", "Max input", "Audit log", "Baseline rules", "Reset overrides", "Done"];
-  const mainItems = ["Permission profile", "Approval reviewer", "Save changes to", "Total review budget", "Tool rules", "Scoped rules", "Session approvals", "Recent decisions", "Diagnostics", "Show settings", "Configuration sources", "Reset session settings", "Advanced", "Done"];
+  // Keep stable action IDs separate from their decorated display labels.
+  const pick = async (title: string, rows: Array<[string, string, string?]>) => {
+    const selected = await ctx.ui.select(title, rows.map(([, label, description]) => ({ label, description })));
+    return rows.find(([, label]) => label === selected)?.[0] ?? selected;
+  };
+  const run = (command: string) => handlePermissionCommand(command, ctx, { basePath, userPath, compactFeedback: true });
+  let page: "main" | "rules" | "advanced" | "details" = "main";
   while (true) {
     let config: Config;
     try { config = current(); } catch (error) {
       ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
       return;
     }
-    let choice = await ctx.ui.select(`Permissions (${config.profile}; ${config.reviewer} reviewer; save: ${saveScope(ctx)})`, mainItems);
-    if (choice === "Advanced") {
-      choice = await ctx.ui.select("Advanced permission settings", advancedItems);
-      if (!choice || choice === "Done") continue;
+    const profile = PROFILES.find((p) => p.id === config.profile)?.label ?? config.profile;
+    const pages: Record<typeof page, Array<[string, string, string?]>> = {
+      main: [
+        ["Permission profile", `󰒃  Profile · ${profile}`, `Mode: ${config.mode}. Choose a ready-made permission setup.`],
+        ["Approval reviewer", `󰚩  Reviewer · ${config.reviewer === "model" ? "AI" : "You"}`, "Who checks actions that have no matching rule."],
+        ["Total review budget", `󰥔  Wait limit · ${seconds(config.reviewTimeoutMs)}`, "Maximum total wait for AI review."],
+        ["Save changes to", `󰆓  Save to · ${saveScope(ctx) === "user" ? "User settings" : "This session"}`, "Session settings take priority over saved user settings."],
+        ["Rules", `󰒓  Rules & approvals · ${Object.keys(config.toolRules).length + config.scopedRules.length} rules`, "Manage exceptions and remembered approvals."],
+        ["Details", "󰋼  Activity & diagnostics", "Recent decisions, setup checks and full configuration."],
+        ["Advanced", "󰢻  Advanced", "Model, fallback and detailed review settings."],
+        ["Done", "󰄬  Done"],
+      ],
+      rules: [
+        ["Tool rules", `󰒓  Tool rules · ${Object.keys(config.toolRules).length}`, "Rules for every call of a named tool."],
+        ["Scoped rules", `󰉋  Scoped rules · ${config.scopedRules.length}`, "Limit a rule to a command or folder."],
+        ["Session approvals", "󰌾  Remembered approvals", "Inspect or revoke approvals for this session."],
+        ["Baseline rules", `󰈙  Safe reads & queries · ${config.baselineRules ? "On" : "Off"}`],
+        ["Back", "󰁍  Back"],
+      ],
+      details: [
+        ["Recent decisions", "󰋚  Recent decisions"], ["Diagnostics", "󰌘  Check setup"],
+        ["Show settings", "󰈙  All settings"], ["Configuration sources", "󰒓  Setting sources"],
+        ["Back", "󰁍  Back"],
+      ],
+      advanced: [
+        ["Reviewer model", `󰚩  Model · ${config.model}`],
+        ["Failure policy", `󰔟  If review fails · ${config.failurePolicy === "ask" ? "Ask me" : "Block"}`],
+        ["Mode", `󰒃  Mode · ${config.mode}`],
+        ["Timeout (seconds)", `󰥔  Per-attempt limit · ${seconds(config.timeoutMs)}`],
+        ["Retries", `󰑓  Retries · ${config.maxRetries}`], ["Thinking", `󰙵  Thinking · ${config.reasoning}`],
+        ["Max tokens", `󰘦  Output limit · ${config.maxTokens} tokens`],
+        ["Max input", `󰈙  Input limit · ${config.maxInputCharacters} bytes`],
+        ["Audit log", `󰋚  Audit log · ${config.auditLog ? "On" : "Off"}`],
+        ["Reset session settings", "󰑓  Reset this session"], ["Reset overrides", "󰑓  Reset saved settings"],
+        ["Back", "󰁍  Back"],
+      ],
+    };
+    const choice = await pick(page === "main" ? "󰒃  Permissions" : `󰒓  Permissions / ${page}`, pages[page]);
+    if (!choice || choice === "Back") { if (page === "main") return; page = "main"; continue; }
+    if (choice === "Rules" || choice === "Advanced" || choice === "Details") {
+      page = choice.toLowerCase() as "rules" | "advanced" | "details"; continue;
     }
     const direct = { "Recent decisions": "history", "Diagnostics": "doctor", "Configuration sources": "sources", "Reset session settings": "session-reset" }[choice ?? ""];
-    if (direct) { await handlePermissionCommand(direct, ctx, { basePath, userPath }); continue; }
+    if (direct) { await run(direct); continue; }
     if (choice === "Permission profile") {
       const selected = await ctx.ui.select("Permission profile (explicit rules remain active)", PROFILES.map((p) => ({ label: p.label, description: p.description })));
       const preset = PROFILES.find((p) => p.label === selected);
-      if (preset) await handlePermissionCommand(`profile ${preset.id}`, ctx, { basePath, userPath });
+      if (preset) await run(`profile ${preset.id}`);
       continue;
     }
     if (choice === "Scoped rules") {
-      const selected = await ctx.ui.select("Scoped rules", ["Add JSON rule", ...config.scopedRules.map((r) => r.id), "Back"]);
+      const selected = await pick("󰉋  Scoped rules", [
+        ["Add command rule", "󰆍  Add command rule", "Match a command prefix in this project."],
+        ["Add folder rule", "󰉋  Add folder rule", "Read or write access within a folder."],
+        ...config.scopedRules.map((r): [string, string, string] => [r.id, `${r.decision} · ${r.kind === "command" ? r.prefix.join(" ") : `${r.tool} ${r.root}`} · ${r.id}`, describeScopedRule(r)]),
+        ["Back", "󰁍  Back"],
+      ]);
       if (!selected || selected === "Back") continue;
-      if (selected === "Add JSON rule") {
-        const json = await ctx.ui.input("Scoped rule JSON", '{"id":"tests","kind":"command","cwd":"/project","prefix":["bun","test"],"decision":"allow"}');
-        if (json) await handlePermissionCommand(`scoped add ${json}`, ctx, { basePath, userPath });
-      } else if (await ctx.ui.select(JSON.stringify(config.scopedRules.find((r) => r.id === selected), null, 2), ["Keep", "Remove"]) === "Remove") {
-        await handlePermissionCommand(`scoped remove ${selected}`, ctx, { basePath, userPath });
+      if (selected === "Add command rule" || selected === "Add folder rule") {
+        const decision = await pick("󰒃  Rule action", [
+          ["ask", "󰋗  Ask me"], ["allow", "󰄬  Allow"], ["deny", "󰅖  Block"],
+        ]);
+        if (!decision || !["ask", "allow", "deny"].includes(decision)) continue;
+        let rule: ScopedRule;
+        const id = `rule-${randomUUID()}`;
+        if (selected === "Add command rule") {
+          const command = await ctx.ui.input("Command prefix · allows matching trailing arguments", "e.g. bun test");
+          if (!command) continue;
+          const parsed = parseCommands(command);
+          if (!parsed || parsed.length !== 1) { ctx.ui.notify("Enter one literal command, without pipes, redirects or expansions.", "error"); continue; }
+          rule = { id, kind: "command", cwd: ctx.cwd, prefix: parsed[0], decision: decision as "allow" | "ask" | "deny" };
+        } else {
+          const tool = await pick("󰉋  Folder access", [["read", "󰈙  Read files"], ["write", "󰏫  Write files"]]);
+          if (tool !== "read" && tool !== "write") continue;
+          const folder = await ctx.ui.input("Folder · relative to this project or absolute", ctx.cwd);
+          if (!folder) continue;
+          rule = { id, kind: "path", tool, root: resolve(ctx.cwd, folder), decision: decision as "allow" | "ask" | "deny" };
+        }
+        await run(`scoped add ${JSON.stringify(rule)}`);
+      } else if (await ctx.ui.select(describeScopedRule(config.scopedRules.find((r) => r.id === selected)!), ["Keep", "Remove"]) === "Remove") {
+        await run(`scoped remove ${selected}`);
       }
       continue;
     }
@@ -365,19 +439,23 @@ async function openMenu(
       continue;
     }
     if (choice === "Reset overrides") {
-      await handlePermissionCommand("reset", ctx, { basePath, userPath });
+      await run("reset");
       continue;
     }
     if (choice === "Tool rules") {
       const existing = Object.entries(config.toolRules).sort(([a], [b]) => a.localeCompare(b));
       const selected = await ctx.ui.select("Tool rules", ["Add rule", ...existing.map(([tool, policy]) => `${tool}: ${policy}`), "Back"]);
       if (!selected || selected === "Back") continue;
-      const tool = selected === "Add rule" ? await ctx.ui.input("Tool name (exact match)", "bash, edit, write...")
+      let tool = selected === "Add rule" ? await pick("󰒓  Choose a tool", [
+        ...["bash", "read", "write", "edit", "task"].map((name): [string, string] => [name, name]),
+        ["custom", "Other tool…"],
+      ])
         : existing.find(([name, policy]) => selected === `${name}: ${policy}`)?.[0];
+      if (tool === "custom") tool = await ctx.ui.input("Tool name (exact match)", "Tool name");
       if (!tool) continue;
       const policy = await ctx.ui.select(`Rule for ${tool}`, ["review", "ask", "allow", "deny", "remove"]);
       if (!policy) continue;
-      await handlePermissionCommand(`rule ${policy === "remove" ? `remove ${tool}` : `${tool} ${policy}`}`, ctx, { basePath, userPath });
+      await run(`rule ${policy === "remove" ? `remove ${tool}` : `${tool} ${policy}`}`);
       continue;
     }
     const key = {
@@ -387,11 +465,17 @@ async function openMenu(
     }[choice];
     if (!key) continue;
     let value: string | undefined;
-    if (key === "reviewer") value = await ctx.ui.select("Who reviews unmatched actions?", ["model", "user"]);
-    else if (key === "scope") value = await ctx.ui.select("Save subsequent settings to", ["user", "session"]);
-    else if (key === "budget") value = await ctx.ui.input("Total review budget (seconds)", `Current: ${seconds(config.reviewTimeoutMs)}; includes all attempts`);
+    if (key === "reviewer") value = await pick("󰚩  Who reviews unmatched actions?", [["model", "󰚩  AI reviewer"], ["user", "󰋗  Ask me"]]);
+    else if (key === "scope") value = await pick("󰆓  Save changes to", [["user", "󰆓  User settings", "Keep changes for future sessions."], ["session", "󰥔  This session", "Temporary overrides; saved user settings stay intact."]]);
+    else if (key === "budget") {
+      value = await pick("󰥔  Maximum review wait", [
+        ["10", "10 seconds", "Short wait"], ["20", "20 seconds", "Default"],
+        ["60", "60 seconds", "More time for slower models"], ["custom", "Custom…"],
+      ]);
+      if (value === "custom") value = await ctx.ui.input("Total review budget (seconds)", `Current: ${seconds(config.reviewTimeoutMs)}`);
+    }
     else if (key === "mode") value = await ctx.ui.select("Permission mode", ["review", "ask", "deny", "yolo"]);
-    else if (key === "fallback") value = await ctx.ui.select("When reviewer fails", ["ask", "deny"]);
+    else if (key === "fallback") value = await pick("󰔟  If review fails", [["ask", "󰋗  Ask me"], ["deny", "󰅖  Block the action"]]);
     else if (key === "audit") value = await ctx.ui.select("Audit log", ["on", "off"]);
     else if (key === "baseline") value = await ctx.ui.select("Baseline rules", ["on", "off", "list"]);
     else if (key === "thinking") value = await ctx.ui.select("Reviewer thinking effort", [...THINKING_LEVELS]);
@@ -402,7 +486,7 @@ async function openMenu(
     else if (key === "retries") value = await ctx.ui.input("Retries after the first attempt", `Current: ${config.maxRetries}; 0–5 (2 means 3 attempts total)`);
     else value = await ctx.ui.input(key, "positive integer");
     if (!value) continue;
-    await handlePermissionCommand(`${key} ${value}`, ctx, { basePath, userPath });
+    await run(`${key} ${value}`);
   }
 }
 

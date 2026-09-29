@@ -1,6 +1,6 @@
 {
   "name": "omp-permission-auto-review",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Scoped permission manager with optional model review for Oh My Pi",
   "type": "module",
   "license": "MIT",

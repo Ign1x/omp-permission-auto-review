@@ -49,9 +49,15 @@ path under the active OMP profile's agent directory:
 
 ## `/permission` settings
 
-Run `/permission` for profiles, approval reviewer, save scope, total wait, rules,
-session approvals and diagnostics. Model tuning and legacy modes live under
-**Advanced**. User settings affect other sessions on their next call; session
+Run `/permission` for a compact menu with Nerd Font icons and current values.
+Choose a profile, reviewer, save scope or a 10/20/60-second wait limit directly.
+**Rules & approvals** groups tool exceptions, guided command/folder rules and
+remembered approvals; **Activity & diagnostics** contains decision history and
+configuration details. Model tuning and legacy modes live under **Advanced**.
+Back or Escape returns to the main menu; Escape on the main menu closes it.
+Changes keep you in the current group and show a short confirmation. Use a
+Nerd Font in your terminal to display the icons; text labels remain readable
+without it. Direct commands, including JSON rules, are still supported. User settings affect other sessions on their next call; session
 overrides affect only that session and last only for this process.
 
 | Profile command | Automatic behavior | Unmatched actions |

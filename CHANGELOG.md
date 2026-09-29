@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.1 — 2026-09-29
+
+- Simplify settings into eight main entries with Nerd Font icons, current values and persistent submenus.
+- Add quick review budgets, tool selection and command/folder rule wizards with readable scope previews.
+- Keep interactive save feedback short; retain detailed output for direct commands.
+
 ## 1.0.0 — 2026-09-29
 
 1. Separate local permission evaluation from model review; allow supported workspace reads locally.

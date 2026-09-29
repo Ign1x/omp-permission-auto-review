@@ -182,3 +182,81 @@ describe("permission settings", () => {
     expect(notices.at(-1)).toContain("retries <0-5>");
   });
 });
+
+describe("simplified settings navigation", () => {
+  function menuContext(steps: Array<string | undefined>, inputs: Array<string | undefined> = [], approve = true) {
+    const notices: string[] = [];
+    const confirmations: string[] = [];
+    const ctx = { cwd: "/tmp", hasUI: true, ui: {
+      select: async (_title: string, items: Array<string | { label: string }>) => {
+        expect(steps.length).toBeGreaterThan(0);
+        const next = steps.shift();
+        if (next === undefined) return undefined;
+        const labels = items.map((item) => typeof item === "string" ? item : item.label);
+        const matches = labels.filter((label) => label.includes(next));
+        expect(matches).toHaveLength(1);
+        return matches[0];
+      },
+      input: async () => inputs.shift(),
+      confirm: async (_title: string, body: string) => { confirmations.push(body); return approve; },
+      notify: (message: string) => notices.push(message),
+    } } as any;
+    return { ctx, notices, confirmations };
+  }
+
+  test("quick budget selection saves without input and keeps feedback short", async () => {
+    const options = paths();
+    const { ctx, notices } = menuContext(["Wait limit", "10 seconds", "Done"]);
+    await handlePermissionCommand("", ctx, options);
+    expect(loadConfig(options.basePath, options.userPath).reviewTimeoutMs).toBe(10000);
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain("Saved to user");
+    expect(notices[0]).not.toContain("\n");
+  });
+
+  test("command wizard preserves quoted arguments and previews scope before allowing", async () => {
+    const options = paths();
+    const { ctx, confirmations } = menuContext(
+      ["Rules &", "Scoped rules", "Add command", "Allow", "Back", "Done"], ["git log 'two words'"],
+    );
+    await handlePermissionCommand("", ctx, options);
+    expect(loadConfig(options.basePath, options.userPath).scopedRules[0]).toMatchObject({
+      kind: "command", cwd: "/tmp", prefix: ["git", "log", "two words"], decision: "allow",
+    });
+    expect(confirmations[0]).toContain("trailing arguments");
+    expect(confirmations[0]).toContain("Folder: /tmp");
+  });
+
+  test("folder wizard resolves relative folders and stays in the rules group", async () => {
+    const options = paths();
+    const { ctx } = menuContext(
+      ["Rules &", "Scoped rules", "Add folder", "Block", "Write files", "Back", "Done"], ["private"],
+    );
+    await handlePermissionCommand("", ctx, options);
+    expect(loadConfig(options.basePath, options.userPath).scopedRules[0]).toMatchObject({
+      kind: "path", root: "/tmp/private", tool: "write", decision: "deny",
+    });
+  });
+
+  test("cancelling a wizard or rejecting an allow preview saves no rule", async () => {
+    for (const approve of [true, false]) {
+      const options = paths();
+      const { ctx } = menuContext(
+        ["Rules &", "Scoped rules", "Add command", "Allow", "Back", "Done"],
+        [approve ? undefined : "bun test"], approve,
+      );
+      await handlePermissionCommand("", ctx, options);
+      expect(loadConfig(options.basePath, options.userPath).scopedRules).toEqual([]);
+    }
+  });
+
+  test("command wizard rejects a compound command without changing permissions", async () => {
+    const options = paths();
+    const { ctx, notices } = menuContext(
+      ["Rules &", "Scoped rules", "Add command", "Allow", "Back", "Done"], ["bun test && git status"],
+    );
+    await handlePermissionCommand("", ctx, options);
+    expect(loadConfig(options.basePath, options.userPath).scopedRules).toEqual([]);
+    expect(notices[0]).toContain("one literal command");
+  });
+});
