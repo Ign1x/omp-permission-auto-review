@@ -2,16 +2,15 @@ import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@oh-my-pi/pi-coding-agent";
-import { configPath, loadConfig, type Config } from "./config.ts";
+import { configPath, loadEffectiveConfig, clearSessionConfig, type Config } from "./config.ts";
 import { evaluatePolicy } from "./policy.ts";
 import { modelReview } from "./model-review.ts";
 export { modelReview, reviewEvidence } from "./model-review.ts";
 import { registerPermissionCommand } from "./permission-command.ts";
 import { syncHandlerBudget } from "./handler-budget.ts";
 import { mayAutoApprove, type Decision } from "./review.ts";
-import { requestApproval, type ApprovalOptions } from "./approval.ts";
-import { sessionApprovals } from "./session-approvals.ts";
-import { policyFingerprint } from "./session-approvals.ts";
+import { requestApproval, ApprovalDialogError, type ApprovalOptions } from "./approval.ts";
+import { sessionApprovals, policyFingerprint } from "./session-approvals.ts";
 import { authorizationRevision, StaleAuthorizationError } from "./evidence.ts";
 import { abortable, startReview, cancelReviews, ReviewCancelledError, ManualTakeoverError } from "./review-control.ts";
 import { decisionFeedback } from "./review-feedback.ts";
@@ -51,8 +50,7 @@ export async function handleToolCall(
     if (config?.auditLog !== false) record(event, outcome, detail);
   };
   try {
-    config = options.config ?? loadConfig();
-    revision = authorizationRevision(ctx);
+    config = options.config ?? loadEffectiveConfig(ctx);
     const policy = evaluatePolicy(event, ctx.cwd, config);
     if (policy.action === "allow") {
       recordDecision(policy.source === "baseline" ? "baseline_allow" : "policy_allow", policy.ruleId ?? policy.reason);
@@ -62,12 +60,13 @@ export async function handleToolCall(
       recordDecision("policy_deny", policy.reason);
       return { block: true, reason: `Permission rule denies ${event.toolName}: ${policy.reason}` };
     }
+    revision = authorizationRevision(ctx);
     if ((options.approvals ?? sessionApprovals).has(event, ctx, config)) {
       recordDecision("session_allow", "Explicit approval for this exact call in this session");
       return undefined;
     }
     if (policy.action === "ask") {
-      const approved = await requestApproval(event, ctx, "Permission required", policy.reason, { ...options, config, currentConfig: options.currentConfig ?? (options.config ? () => options.config! : loadConfig) });
+      const approved = await requestApproval(event, ctx, "Permission required", policy.reason, { ...options, config, currentConfig: options.currentConfig ?? (options.config ? () => options.config! : () => loadEffectiveConfig(ctx)) });
       recordDecision(approved ? "user_allow" : "user_deny", "ask policy");
       return approved ? undefined : { block: true, reason: `Permission approval required for ${event.toolName}` };
     }
@@ -78,7 +77,7 @@ export async function handleToolCall(
       decision = await abortable(options.review ? options.review(event, ctx, config, running.signal)
         : modelReview(event, ctx, config, undefined, { signal: running.signal }), running.signal);
     } finally { running.dispose(); }
-    const latest = options.currentConfig ? options.currentConfig() : options.config ?? loadConfig();
+    const latest = options.currentConfig ? options.currentConfig() : options.config ?? loadEffectiveConfig(ctx);
     if (authorizationRevision(ctx) !== revision || policyFingerprint(latest) !== policyFingerprint(config)) throw new StaleAuthorizationError();
     if (mayAutoApprove(decision)) {
       recordDecision("allow", decision.rationale);
@@ -88,7 +87,7 @@ export async function handleToolCall(
       recordDecision("deny", decision.rationale);
       return { block: true, reason: `Automatic review denied: ${decision.rationale}` };
     }
-    if (await requestApproval(event, ctx, "Permission review", decision.rationale, { ...options, config, currentConfig: options.currentConfig ?? (options.config ? () => options.config! : loadConfig) })) {
+    if (await requestApproval(event, ctx, "Permission review", decision.rationale, { ...options, config, currentConfig: options.currentConfig ?? (options.config ? () => options.config! : () => loadEffectiveConfig(ctx)) })) {
       recordDecision("user_allow", decision.rationale);
       return undefined;
     }
@@ -96,6 +95,10 @@ export async function handleToolCall(
     return { block: true, reason: `Permission review requires user approval: ${decision.rationale}` };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
+    if (error instanceof ApprovalDialogError) {
+      recordDecision("approval_unavailable", reason);
+      return { block: true, reason };
+    }
     if (revision !== undefined && authorizationRevision(ctx) !== revision) {
       const detail = new StaleAuthorizationError().message;
       recordDecision("stale_authorization", detail);
@@ -111,7 +114,7 @@ export async function handleToolCall(
     }
     if (ctx.hasUI) {
       try {
-        const approved = await requestApproval(event, ctx, "Automatic review unavailable", reason, { ...options, config, currentConfig: options.currentConfig ?? (options.config ? () => options.config! : loadConfig) });
+        const approved = await requestApproval(event, ctx, "Automatic review unavailable", reason, { ...options, config, currentConfig: options.currentConfig ?? (options.config ? () => options.config! : () => loadEffectiveConfig(ctx)) });
         recordDecision(approved ? "user_allow_unavailable" : "user_deny_unavailable", reason);
         if (approved) return undefined;
       } catch (confirmError) {
@@ -130,7 +133,7 @@ export default function ompPermissionAutoReview(omp: ExtensionAPI): void {
   omp.registerShortcut("ctrl+alt+x", { description: "Cancel permission review and block the call", handler: (ctx) => { cancelReviews(ctx); } });
   omp.on("session_start", (_event, ctx) => syncHandlerBudget(ctx));
   omp.on("session_switch", (_event, ctx) => { sessionApprovals.revoke(ctx); cancelReviews(ctx); });
-  omp.on("session_shutdown", (_event, ctx) => { sessionApprovals.revoke(ctx); cancelReviews(ctx); });
+  omp.on("session_shutdown", (_event, ctx) => { sessionApprovals.revoke(ctx); cancelReviews(ctx); clearSessionConfig(ctx); });
   omp.on("before_agent_start", (_event, ctx) => syncHandlerBudget(ctx));
   omp.on("turn_start", (_event, ctx) => syncHandlerBudget(ctx));
   omp.on("tool_call", (event, ctx) => handleToolCall(event, ctx));

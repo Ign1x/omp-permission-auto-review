@@ -24,7 +24,7 @@ export function parseCommands(command: string): string[][] | undefined {
   if (quote || !words.length) return;
   commands.push(words);
   if (commands.length > 32 || commands.some((argv) => argv.length > 128 || !/^[\p{L}\p{N}_.\/-]+$/u.test(argv[0]))) return;
-  if (commands.length > 1 && commands.some((argv) => ["cd", "pushd", "popd", "export", "unset", "alias", "unalias", "source", ".", "set", "eval", "exec"].includes(argv[0]))) return;
+  if (commands.length > 1 && commands.some((argv) => ["cd", "pushd", "popd", "export", "unset", "alias", "unalias", "source", ".", "set", "eval", "exec", "read", "typeset", "declare", "local", "readonly", "shift", "umask", "ulimit", "trap", "hash", "builtin"].includes(argv[0]))) return;
   return commands;
 }
 

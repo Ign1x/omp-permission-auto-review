@@ -25,7 +25,7 @@ export function proposedCommandRule(event: ToolCallEvent, ctx: ExtensionContext)
   try { validateScopedRules([rule]); return rule; } catch { return; }
 }
 
-export async function requestApproval(
+async function requestApprovalInner(
   event: ToolCallEvent, ctx: ExtensionContext, title: string, reason: string, options: ApprovalOptions = {},
 ): Promise<boolean> {
   if (!ctx.hasUI) return false;
@@ -76,4 +76,15 @@ export async function requestApproval(
     }
   }
   return false;
+}
+
+export class ApprovalDialogError extends Error {}
+export async function requestApproval(
+  event: ToolCallEvent, ctx: ExtensionContext, title: string, reason: string, options: ApprovalOptions = {},
+): Promise<boolean> {
+  try { return await requestApprovalInner(event, ctx, title, reason, options); }
+  catch (error) {
+    if (error instanceof StaleAuthorizationError) throw error;
+    throw new ApprovalDialogError(`Approval dialog unavailable; tool remains blocked: ${String(error)}`);
+  }
 }

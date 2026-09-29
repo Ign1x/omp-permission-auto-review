@@ -1,14 +1,14 @@
 {
   "name": "omp-permission-auto-review",
-  "version": "0.2.3",
-  "description": "Single-extension, model-backed tool approval for Oh My Pi",
+  "version": "1.0.0",
+  "description": "Scoped permission manager with optional model review for Oh My Pi",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ign1x/omp-permission-auto-review.git"
   },
-  "files": ["src", "README.md", "LICENSE", "THIRD-PARTY-NOTICES.md"],
+  "files": ["src", "docs", "README.md", "CHANGELOG.md", "LICENSE", "THIRD-PARTY-NOTICES.md"],
   "omp": {
     "extensions": ["./src/index.ts"]
   },

@@ -36,7 +36,7 @@ describe("scoped permissions", () => {
     expect(evaluatePolicy({ toolName: "bash", input: { command: "bun test --watch" } }, cwd,
       parseConfig({ mode: "yolo", toolRules: { bash: "allow" }, scopedRules: rules })).action).toBe("deny");
   });
-  test.each(["git status &&", "git status & bun test", "git status;", "A=x git status", "git status > out", "git status $(id)", "git status\nbun test", "cd /tmp && bun test", "git status '*.ts'", "git status 'a;b'", "git status ||| bun test"])("unsupported shell syntax does not match: %s", (cmd) => {
+  test.each(["git status &&", "git status & bun test", "git status;", "A=x git status", "git status > out", "git status $(id)", "git status\nbun test", "cd /tmp && bun test", "read PATH && bun test", "declare PATH=/tmp && bun test", "trap payload EXIT; bun test", "git status '*.ts'", "git status 'a;b'", "git status ||| bun test"])("unsupported shell syntax does not match: %s", (cmd) => {
     expect(parseCommands(cmd)).toBeUndefined();
   });
   test("path scopes support read and write without symlink or sibling escapes", () => {

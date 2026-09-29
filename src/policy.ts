@@ -1,6 +1,6 @@
 import type { Config } from "./config.ts";
 import { matchBaselineRule } from "./baseline-rules.ts";
-import { matchingRules } from "./scoped-rules.ts";
+import { matchingRules, writeWithin } from "./scoped-rules.ts";
 
 export interface ToolAction {
   toolName: string;
@@ -9,7 +9,7 @@ export interface ToolAction {
 
 export interface PolicyDecision {
   action: "allow" | "deny" | "ask" | "review";
-  source: "tool-rule" | "mode" | "baseline" | "scoped-rule";
+  source: "tool-rule" | "mode" | "baseline" | "scoped-rule" | "profile";
   reason: string;
   ruleId?: string;
 }
@@ -28,7 +28,10 @@ export function evaluatePolicy(event: ToolAction, cwd: string, config: Config): 
     return { action: config.mode === "yolo" ? "allow" : config.mode, source: "mode", reason: `Permission mode: ${config.mode}` };
   }
   if (result) return result;
+  if (config.profile === "workspace" && event.toolName === "write" && writeWithin(event.input, cwd, cwd)) {
+    return { action: "allow", source: "profile", reason: "Workspace development permits this ordinary workspace write" };
+  }
   const baseline = config.baselineRules && matchBaselineRule(event.toolName, event.input, cwd);
   if (baseline) return { action: "allow", source: "baseline", reason: baseline.description, ruleId: baseline.id };
-  return { action: "review", source: "mode", reason: "No local permission rule covers this action" };
+  return { action: config.reviewer === "user" ? "ask" : "review", source: "mode", reason: `No local permission rule covers this action; reviewer: ${config.reviewer}` };
 }

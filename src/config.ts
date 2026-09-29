@@ -2,11 +2,13 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { validateScopedRules, type ScopedRule } from "./scoped-rules.ts";
 
 export type Mode = "review" | "ask" | "deny" | "yolo";
 export type ToolPolicy = "review" | "ask" | "allow" | "deny";
 export type FailurePolicy = "ask" | "deny";
+export type PermissionProfile = "custom" | "inspect" | "workspace" | "full-access";
 export const THINKING_LEVELS = ["low", "medium", "high"] as const;
 export type ThinkingLevel = typeof THINKING_LEVELS[number];
 
@@ -19,6 +21,8 @@ export interface Config {
   reasoning: ThinkingLevel;
   maxInputCharacters: number;
   mode: Mode;
+  profile: PermissionProfile;
+  reviewer: "model" | "user";
   failurePolicy: FailurePolicy;
   auditLog: boolean;
   baselineRules: boolean;
@@ -35,6 +39,8 @@ export const DEFAULT_CONFIG: Config = {
   reasoning: "low",
   maxInputCharacters: 12000,
   mode: "review",
+  profile: "custom",
+  reviewer: "model",
   failurePolicy: "ask",
   auditLog: true,
   baselineRules: true,
@@ -81,6 +87,8 @@ export function parseConfig(value: unknown): Config {
   }
   if (!THINKING_LEVELS.includes(config.reasoning)) throw new Error("reasoning must be low, medium, or high");
   if (!["review", "ask", "deny", "yolo"].includes(config.mode)) throw new Error("invalid mode");
+  if (!["custom", "inspect", "workspace", "full-access"].includes(config.profile)) throw new Error("invalid profile");
+  if (!["model", "user"].includes(config.reviewer)) throw new Error("reviewer must be model or user");
   if (!["ask", "deny"].includes(config.failurePolicy)) throw new Error("invalid failurePolicy");
   if (typeof config.auditLog !== "boolean") throw new Error("auditLog must be a boolean");
   if (typeof config.baselineRules !== "boolean") throw new Error("baselineRules must be a boolean");
@@ -125,4 +133,27 @@ export function resetConfig(userPath = overrideConfigPath()): void {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
+}
+
+const sessionSettings = new Map<string, Partial<Config>>();
+function sessionId(ctx: ExtensionContext): string | undefined { return ctx.sessionManager?.getSessionId?.(); }
+export function sessionConfig(ctx: ExtensionContext): Partial<Config> { return sessionSettings.get(sessionId(ctx) ?? "") ?? {}; }
+export function clearSessionConfig(ctx: ExtensionContext): void { const id = sessionId(ctx); if (id) sessionSettings.delete(id); }
+export function loadEffectiveConfig(ctx: ExtensionContext, basePath = configPath(), userPath = join(dirname(basePath), "user.json")): Config {
+  return parseConfig({ ...loadConfig(basePath, userPath), ...sessionConfig(ctx) });
+}
+export function saveSessionConfig(ctx: ExtensionContext, changes: Partial<Config>, basePath = configPath(), userPath = join(dirname(basePath), "user.json")): Config {
+  const id = sessionId(ctx);
+  if (!id) throw new Error("Session settings require an active session");
+  const overrides = { ...sessionConfig(ctx), ...changes };
+  const config = parseConfig({ ...loadConfig(basePath, userPath), ...overrides });
+  if (!sessionSettings.has(id) && sessionSettings.size >= 100) sessionSettings.delete(sessionSettings.keys().next().value!);
+  sessionSettings.set(id, overrides);
+  return config;
+}
+export function configSources(ctx: ExtensionContext, basePath = configPath(), userPath = join(dirname(basePath), "user.json")): Record<keyof Config, string> {
+  const base = readConfigFile(basePath), user = readConfigFile(userPath), session = sessionConfig(ctx);
+  return Object.fromEntries(Object.keys(DEFAULT_CONFIG).map((key) => [key,
+    Object.hasOwn(session, key) ? "session" : Object.hasOwn(user, key) ? "user" : Object.hasOwn(base, key) ? "managed" : "default",
+  ])) as Record<keyof Config, string>;
 }

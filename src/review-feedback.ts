@@ -42,6 +42,7 @@ const OUTCOMES: Record<string, string> = {
   stale_authorization: "Blocked; authorization changed",
   cancelled: "Review cancelled",
   review_unavailable: "Blocked; reviewer unavailable",
+  approval_unavailable: "Blocked; approval dialog unavailable",
 };
 
 export function decisionFeedback(ctx: ExtensionContext, event: ToolCallEvent, outcome: string, detail: string): void {
@@ -50,4 +51,3 @@ export function decisionFeedback(ctx: ExtensionContext, event: ToolCallEvent, ou
     try { ctx.ui.notify(`${OUTCOMES[outcome]}: ${compact(event.toolName)}\n${detail}`, "warning"); } catch { /* UI is best effort. */ }
   }
 }
-
