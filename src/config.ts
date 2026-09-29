@@ -14,6 +14,7 @@ export interface Config {
   model: string;
   maxTokens: number;
   timeoutMs: number;
+  reviewTimeoutMs: number;
   maxRetries: number;
   reasoning: ThinkingLevel;
   maxInputCharacters: number;
@@ -29,6 +30,7 @@ export const DEFAULT_CONFIG: Config = {
   model: "current",
   maxTokens: 4096,
   timeoutMs: 20000,
+  reviewTimeoutMs: 20000,
   maxRetries: 2,
   reasoning: "low",
   maxInputCharacters: 12000,
@@ -68,10 +70,10 @@ export function parseConfig(value: unknown): Config {
   const config = { ...DEFAULT_CONFIG, ...input } as Config;
   validateScopedRules(config.scopedRules);
   if (typeof config.model !== "string" || !config.model.trim()) throw new Error("model must be a non-empty string");
-  for (const key of ["maxTokens", "timeoutMs", "maxInputCharacters"] as const) {
+  for (const key of ["maxTokens", "timeoutMs", "reviewTimeoutMs", "maxInputCharacters"] as const) {
     if (!Number.isSafeInteger(config[key]) || config[key] <= 0) throw new Error(`${key} must be a positive integer`);
   }
-  if (config.maxTokens > 16384 || config.maxInputCharacters > 100000 || config.timeoutMs > 300000) {
+  if (config.maxTokens > 16384 || config.maxInputCharacters > 100000 || config.timeoutMs > 300000 || config.reviewTimeoutMs > 1800000) {
     throw new Error("config exceeds supported limits");
   }
   if (!Number.isSafeInteger(config.maxRetries) || config.maxRetries < 0 || config.maxRetries > 5) {

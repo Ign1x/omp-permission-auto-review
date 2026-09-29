@@ -13,7 +13,7 @@ const ctx = {
   sessionManager: { getBranch: () => [{ type: "message", message: { role: "user", content: "List files" } }] },
   ui: { notify: () => {}, confirm: async () => false },
 } as any;
-const config = { ...DEFAULT_CONFIG, model: "fixture/reviewer", timeoutMs: 60000 };
+const config = { ...DEFAULT_CONFIG, model: "fixture/reviewer", timeoutMs: 60000, reviewTimeoutMs: 300000 };
 // Flush the async auth, provider, race and handler continuations before advancing timers.
 async function settle() { for (let i = 0; i < 20; i++) await Promise.resolve(); }
 afterEach(() => jest.useRealTimers());
@@ -123,7 +123,7 @@ describe("review retries", () => {
     expect(finishes).toHaveLength(3);
     expect(messages).toHaveLength(1);
     expect(messages[0]).toContain("after 3 attempt(s)");
-    expect(messages[0]).toContain("timed out after 60 seconds");
+    expect(messages[0]).toContain("total review budget exhausted after 182 seconds");
     for (const finish of finishes) finish(response());
     await settle();
     expect(records).toEqual(["user_deny_unavailable"]);
@@ -150,7 +150,7 @@ describe("review retries", () => {
     await settle(); jest.advanceTimersByTime(60000); await settle();
     const error = await pending;
     expect(error.message).toContain("after 1 attempt(s)");
-    expect(error.message).toContain("timed out after 60 seconds");
+    expect(error.message).toContain("total review budget exhausted after 60 seconds");
   });
 
   test("late authentication cannot dispatch a request after its attempt expired", async () => {
@@ -160,7 +160,7 @@ describe("review retries", () => {
     const pending = modelReview(event as any, { ...ctx, modelRegistry: { getApiKeyAndHeaders: () => new Promise((resolve) => { finish = resolve; }) } },
       { ...config, maxRetries: 0 }, (async () => { requests++; return response(); }) as any).catch((error) => error);
     jest.advanceTimersByTime(60000); await settle();
-    expect((await pending).message).toContain("timed out");
+    expect((await pending).message).toContain("total review budget exhausted");
     finish({ ok: true }); await settle();
     expect(requests).toBe(0);
   });

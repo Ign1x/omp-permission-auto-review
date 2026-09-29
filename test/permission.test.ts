@@ -81,7 +81,7 @@ describe("permission settings", () => {
     expect(notices.at(-1)?.message).toContain("mode: yolo");
     await handlePermissionCommand("timeout 60s", ctx, options);
     expect(loadConfig(basePath, userPath).timeoutMs).toBe(60000);
-    expect(notices.at(-1)?.message).toContain("OMP handler budget: at least 187 seconds");
+    expect(notices.at(-1)?.message).toContain("OMP handler budget: at least 25 seconds");
     expect(notices.at(-1)?.message).not.toContain("effective cap");
     expect(notices.at(-1)?.message).toContain("thinking: low");
     await handlePermissionCommand("retries 0", ctx, options);

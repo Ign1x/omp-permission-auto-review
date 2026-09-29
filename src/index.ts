@@ -13,6 +13,7 @@ import { requestApproval, type ApprovalOptions } from "./approval.ts";
 import { sessionApprovals } from "./session-approvals.ts";
 import { policyFingerprint } from "./session-approvals.ts";
 import { authorizationRevision, StaleAuthorizationError } from "./evidence.ts";
+import { abortable, startReview, cancelReviews, ReviewCancelledError, ManualTakeoverError } from "./review-control.ts";
 
 function audit(event: ToolCallEvent, outcome: string, detail?: string): void {
   const path = join(dirname(configPath()), "logs", "review.jsonl");
@@ -31,12 +32,12 @@ function audit(event: ToolCallEvent, outcome: string, detail?: string): void {
   }
 }
 
-export type Review = (event: ToolCallEvent, ctx: ExtensionContext, config: Config) => Promise<Decision>;
+export type Review = (event: ToolCallEvent, ctx: ExtensionContext, config: Config, signal?: AbortSignal) => Promise<Decision>;
 
 export async function handleToolCall(
   event: ToolCallEvent,
   ctx: ExtensionContext,
-  options: ApprovalOptions & { review?: Review; record?: typeof audit } = {},
+  options: ApprovalOptions & { review?: Review; record?: typeof audit; signal?: AbortSignal } = {},
 ): Promise<{ block: true; reason: string } | undefined> {
   const record = options.record ?? audit;
   let config: Config | undefined;
@@ -64,7 +65,13 @@ export async function handleToolCall(
       recordDecision(approved ? "user_allow" : "user_deny", "ask policy");
       return approved ? undefined : { block: true, reason: `Permission approval required for ${event.toolName}` };
     }
-    const decision = await (options.review ?? modelReview)(event, ctx, config);
+    const running = startReview(ctx, options.signal);
+    let decision: Decision;
+    try {
+      running.signal.throwIfAborted();
+      decision = await abortable(options.review ? options.review(event, ctx, config, running.signal)
+        : modelReview(event, ctx, config, undefined, { signal: running.signal }), running.signal);
+    } finally { running.dispose(); }
     const latest = options.currentConfig ? options.currentConfig() : options.config ?? loadConfig();
     if (authorizationRevision(ctx) !== revision || policyFingerprint(latest) !== policyFingerprint(config)) throw new StaleAuthorizationError();
     if (mayAutoApprove(decision)) {
@@ -83,11 +90,11 @@ export async function handleToolCall(
     return { block: true, reason: `Permission review requires user approval: ${decision.rationale}` };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    if (error instanceof StaleAuthorizationError) {
-      recordDecision("stale_authorization", reason);
+    if (error instanceof StaleAuthorizationError || error instanceof ReviewCancelledError) {
+      recordDecision(error instanceof StaleAuthorizationError ? "stale_authorization" : "cancelled", reason);
       return { block: true, reason };
     }
-    if (config?.failurePolicy === "deny") {
+    if (config?.failurePolicy === "deny" && !(error instanceof ManualTakeoverError)) {
       recordDecision("review_unavailable", reason);
       return { block: true, reason: `Automatic review unavailable: ${reason}` };
     }
@@ -109,8 +116,8 @@ export async function handleToolCall(
 export default function ompPermissionAutoReview(omp: ExtensionAPI): void {
   registerPermissionCommand(omp);
   omp.on("session_start", (_event, ctx) => syncHandlerBudget(ctx));
-  omp.on("session_switch", (_event, ctx) => sessionApprovals.revoke(ctx));
-  omp.on("session_shutdown", (_event, ctx) => sessionApprovals.revoke(ctx));
+  omp.on("session_switch", (_event, ctx) => { sessionApprovals.revoke(ctx); cancelReviews(ctx); });
+  omp.on("session_shutdown", (_event, ctx) => { sessionApprovals.revoke(ctx); cancelReviews(ctx); });
   omp.on("before_agent_start", (_event, ctx) => syncHandlerBudget(ctx));
   omp.on("turn_start", (_event, ctx) => syncHandlerBudget(ctx));
   omp.on("tool_call", (event, ctx) => handleToolCall(event, ctx));

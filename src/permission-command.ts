@@ -18,6 +18,7 @@ import { BASELINE_RULES } from "./baseline-rules.ts";
 import { evaluatePolicy } from "./policy.ts";
 import type { ScopedRule } from "./scoped-rules.ts";
 import { sessionApprovals } from "./session-approvals.ts";
+import { cancelReviews } from "./review-control.ts";
 
 const HELP = [
   "/permission                         Open settings",
@@ -35,6 +36,8 @@ const HELP = [
   '/permission scoped list|remove <id>|add <JSON rule>',
   '/permission explain <tool> <JSON input>  Evaluate without executing',
   '/permission approvals list|clear|revoke <id>',
+  '/permission budget <seconds>       Total review wait (up to 1800 seconds)',
+  '/permission cancel                 Cancel active reviews; block their calls',
 ].join("\n");
 
 const COMMANDS = ["show", "path", "help", "reset", "mode", "fallback", "model", "timeout", "retries", "thinking", "max-tokens", "max-input", "audit", "baseline", "rule", "scoped", "explain"];
@@ -47,6 +50,7 @@ export function formatConfig(config: Config): string {
     `failure: ${config.failurePolicy}`,
     `thinking: ${config.reasoning}`,
     `timeout per attempt: ${seconds(config.timeoutMs)}`,
+    `total review budget: ${seconds(config.reviewTimeoutMs)}`,
     `retries: ${config.maxRetries} (${config.maxRetries + 1} attempts maximum)`,
     `maximum review wait: ${seconds(reviewBudgetMs(config))}`,
     `OMP handler budget: at least ${seconds(handlerBudgetMs(config))} (adjusted automatically for this session)`,
@@ -83,6 +87,18 @@ export async function handlePermissionCommand(args: string, ctx: ExtensionComman
 
   try {
     switch (command) {
+      case "cancel":
+        if (values.length) throw new Error("cancel takes no arguments");
+        ctx.ui.notify(`Cancelled ${cancelReviews(ctx)} active review(s).`, "info");
+        return;
+      case "budget": {
+        const value = oneValue(values, "budget");
+        if (!/^\d+(?:\.\d{1,3})?s?$/.test(value)) throw new Error("budget must be seconds, e.g. 20 or 20s");
+        const ms = Math.round(Number(value.replace(/s$/, "")) * 1000);
+        if (ms <= 0 || ms > 1800000) throw new Error("budget must be greater than 0 and at most 1800 seconds");
+        save({ reviewTimeoutMs: ms });
+        break;
+      }
       case "approvals":
         if (!values.length || (values.length === 1 && values[0] === "list")) ctx.ui.notify(JSON.stringify(sessionApprovals.list(ctx, current()), null, 2), "info");
         else if (values[0] === "clear" && values.length === 1) { sessionApprovals.revoke(ctx); ctx.ui.notify("Session approvals cleared.", "info"); }

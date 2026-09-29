@@ -8,7 +8,7 @@ import { handlerBudgetMs, reviewBudgetMs } from "../src/timing.ts";
 describe("OMP retry budget", () => {
   test("covers every attempt, retry delay and fallback without saving config", () => {
     const settings = Settings.isolated();
-    const config = { ...DEFAULT_CONFIG, timeoutMs: 120000, maxRetries: 2 };
+    const config = { ...DEFAULT_CONFIG, timeoutMs: 120000, reviewTimeoutMs: 400000, maxRetries: 2 };
     expect(reviewBudgetMs(config)).toBe(362000);
     expect(handlerBudgetMs(config)).toBe(367000);
     ensureHandlerBudget(settings, config);

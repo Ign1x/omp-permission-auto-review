@@ -3,7 +3,7 @@ import type { Config } from "./config.ts";
 export const RETRY_DELAY_MS = 1000;
 
 export function reviewBudgetMs(config: Config): number {
-  return config.timeoutMs * (config.maxRetries + 1) + RETRY_DELAY_MS * config.maxRetries;
+  return Math.min(config.reviewTimeoutMs, config.timeoutMs * (config.maxRetries + 1) + RETRY_DELAY_MS * config.maxRetries);
 }
 
 export function handlerBudgetMs(config: Config): number {
