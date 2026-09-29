@@ -9,6 +9,8 @@ export { modelReview, reviewEvidence } from "./model-review.ts";
 import { registerPermissionCommand } from "./permission-command.ts";
 import { syncHandlerBudget } from "./handler-budget.ts";
 import { mayAutoApprove, type Decision } from "./review.ts";
+import { requestApproval, type ApprovalOptions } from "./approval.ts";
+import { sessionApprovals } from "./session-approvals.ts";
 
 function audit(event: ToolCallEvent, outcome: string, detail?: string): void {
   const path = join(dirname(configPath()), "logs", "review.jsonl");
@@ -32,7 +34,7 @@ export type Review = (event: ToolCallEvent, ctx: ExtensionContext, config: Confi
 export async function handleToolCall(
   event: ToolCallEvent,
   ctx: ExtensionContext,
-  options: { review?: Review; config?: Config; record?: typeof audit } = {},
+  options: ApprovalOptions & { review?: Review; record?: typeof audit } = {},
 ): Promise<{ block: true; reason: string } | undefined> {
   const record = options.record ?? audit;
   let config: Config | undefined;
@@ -50,9 +52,12 @@ export async function handleToolCall(
       recordDecision("policy_deny", policy.reason);
       return { block: true, reason: `Permission rule denies ${event.toolName}: ${policy.reason}` };
     }
+    if ((options.approvals ?? sessionApprovals).has(event, ctx, config)) {
+      recordDecision("session_allow", "Explicit approval for this exact call in this session");
+      return undefined;
+    }
     if (policy.action === "ask") {
-      const call = JSON.stringify({ tool: event.toolName, input: event.input }, null, 2);
-      const approved = ctx.hasUI && await ctx.ui.confirm("Permission required", `${policy.reason}\n\n${call}\n\nApprove this call?`);
+      const approved = await requestApproval(event, ctx, "Permission required", policy.reason, { ...options, config, currentConfig: options.currentConfig ?? (options.config ? () => options.config! : loadConfig) });
       recordDecision(approved ? "user_allow" : "user_deny", "ask policy");
       return approved ? undefined : { block: true, reason: `Permission approval required for ${event.toolName}` };
     }
@@ -65,8 +70,7 @@ export async function handleToolCall(
       recordDecision("deny", decision.rationale);
       return { block: true, reason: `Automatic review denied: ${decision.rationale}` };
     }
-    const call = JSON.stringify({ tool: event.toolName, input: event.input }, null, 2);
-    if (ctx.hasUI && await ctx.ui.confirm("Permission review", `${decision.rationale}\n\n${call}\n\nApprove this call?`)) {
+    if (await requestApproval(event, ctx, "Permission review", decision.rationale, { ...options, config, currentConfig: options.currentConfig ?? (options.config ? () => options.config! : loadConfig) })) {
       recordDecision("user_allow", decision.rationale);
       return undefined;
     }
@@ -79,9 +83,8 @@ export async function handleToolCall(
       return { block: true, reason: `Automatic review unavailable: ${reason}` };
     }
     if (ctx.hasUI) {
-      const call = JSON.stringify({ tool: event.toolName, input: event.input }, null, 2);
       try {
-        const approved = await ctx.ui.confirm("Automatic review unavailable", `${reason}\n\n${call}\n\nApprove this call?`);
+        const approved = await requestApproval(event, ctx, "Automatic review unavailable", reason, { ...options, config, currentConfig: options.currentConfig ?? (options.config ? () => options.config! : loadConfig) });
         recordDecision(approved ? "user_allow_unavailable" : "user_deny_unavailable", reason);
         if (approved) return undefined;
       } catch (confirmError) {
@@ -97,6 +100,8 @@ export async function handleToolCall(
 export default function ompPermissionAutoReview(omp: ExtensionAPI): void {
   registerPermissionCommand(omp);
   omp.on("session_start", (_event, ctx) => syncHandlerBudget(ctx));
+  omp.on("session_switch", (_event, ctx) => sessionApprovals.revoke(ctx));
+  omp.on("session_shutdown", (_event, ctx) => sessionApprovals.revoke(ctx));
   omp.on("before_agent_start", (_event, ctx) => syncHandlerBudget(ctx));
   omp.on("turn_start", (_event, ctx) => syncHandlerBudget(ctx));
   omp.on("tool_call", (event, ctx) => handleToolCall(event, ctx));

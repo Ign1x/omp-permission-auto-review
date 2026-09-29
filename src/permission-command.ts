@@ -17,6 +17,7 @@ import { handlerBudgetMs, parseTimeoutSeconds, reviewBudgetMs, seconds } from ".
 import { BASELINE_RULES } from "./baseline-rules.ts";
 import { evaluatePolicy } from "./policy.ts";
 import type { ScopedRule } from "./scoped-rules.ts";
+import { sessionApprovals } from "./session-approvals.ts";
 
 const HELP = [
   "/permission                         Open settings",
@@ -33,6 +34,7 @@ const HELP = [
   "/permission rule [<tool> review|ask|allow|deny | remove <tool>]",
   '/permission scoped list|remove <id>|add <JSON rule>',
   '/permission explain <tool> <JSON input>  Evaluate without executing',
+  '/permission approvals list|clear|revoke <id>',
 ].join("\n");
 
 const COMMANDS = ["show", "path", "help", "reset", "mode", "fallback", "model", "timeout", "retries", "thinking", "max-tokens", "max-input", "audit", "baseline", "rule", "scoped", "explain"];
@@ -81,6 +83,12 @@ export async function handlePermissionCommand(args: string, ctx: ExtensionComman
 
   try {
     switch (command) {
+      case "approvals":
+        if (!values.length || (values.length === 1 && values[0] === "list")) ctx.ui.notify(JSON.stringify(sessionApprovals.list(ctx, current()), null, 2), "info");
+        else if (values[0] === "clear" && values.length === 1) { sessionApprovals.revoke(ctx); ctx.ui.notify("Session approvals cleared.", "info"); }
+        else if (values[0] === "revoke" && values.length === 2) { sessionApprovals.revoke(ctx, values[1]); ctx.ui.notify("Session approval revoked.", "info"); }
+        else throw new Error("usage: /permission approvals list|clear|revoke <id>");
+        return;
       case "explain": {
         const match = args.trim().match(/^explain\s+([\w.:-]+)\s+([\s\S]+)$/);
         if (!match) throw new Error("usage: /permission explain <tool> <JSON input>");

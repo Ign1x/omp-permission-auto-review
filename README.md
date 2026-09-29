@@ -139,6 +139,20 @@ unrecognized syntax should always fall through to review.
 
 ## Configuration and review behavior
 
+Approval dialogs offer **Allow once**, **Allow exact call for this session** and,
+for eligible literal shell commands, **Save command rule…**. Saving a rule shows
+the full token prefix and working directory before confirmation. Such a prefix
+also matches additional trailing arguments; shorter prefixes can be configured
+explicitly through `/permission scoped add`.
+
+Session approvals bind the tool, full input, working directory, session, agent
+and effective configuration. They are held only in memory, never created by a
+model allow, and cleared when a changed configuration is observed. They do not
+transfer to subagents or resumed processes. `/permission approvals list` shows
+grant IDs; `approvals revoke <id>` or `approvals clear` removes them. Persistent
+rules are removed with `/permission scoped remove <id>`. A missing UI blocks
+requests that still need approval. Unsupported UI hosts retain one-call confirms.
+
 Scoped rules are stored in `scopedRules` and managed with `/permission scoped
 list`, `/permission scoped remove <id>`, or `/permission scoped add <JSON>`:
 
