@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.2 — 2026-09-29
+
+- Base model review on Codex Guardian's pinned security policy, authorization scoring and allow/deny contract, with Apache-2.0 notices included.
+- Preserve task plans, pending tool intent and recent observations; allow proportionate necessary implementation steps without exact-file authorization.
+- Give the reviewer bounded, read-only filesystem probes within the existing deadline and cancellation controls.
+- Default failed review to a reason returned to the agent rather than a manual dialog; preserve explicit `failurePolicy: ask` and manual takeover.
+- Allow verified project-local Git diff/status and bounded query pipelines, including a leading project `cd`, without model review.
+- Retain helper/configuration checks and explicit restrictions; bound local probes to 750 ms.
+- Clarify that low-risk inspection is a normal task prerequisite, even when later edits or deletions are not yet determined.
+
 ## 1.0.1 — 2026-09-29
 
 - Simplify settings into eight main entries with Nerd Font icons, current values and persistent submenus.

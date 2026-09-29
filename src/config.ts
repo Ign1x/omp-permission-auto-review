@@ -41,7 +41,7 @@ export const DEFAULT_CONFIG: Config = {
   mode: "review",
   profile: "custom",
   reviewer: "model",
-  failurePolicy: "ask",
+  failurePolicy: "deny",
   auditLog: true,
   baselineRules: true,
   toolRules: {},

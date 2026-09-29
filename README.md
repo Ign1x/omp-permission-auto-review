@@ -6,7 +6,8 @@ approval flow; policy evaluation, review, evidence and UI are separate modules.
 
 ## Status
 
-Version **1.0.0**, designed for Oh My Pi **18.3.2**. It covers OMP tool calls and
+Latest release: **1.0.2**, designed for Oh My Pi **18.3.2**. See the
+[changelog](CHANGELOG.md). It covers OMP tool calls and
 does not install an OS sandbox or enforce restrictions inside arbitrary shell
 programs. See [migration notes](docs/migration-1.0.md). OMP's
 native approval gate may still apply unless `tools.approvalMode` is `yolo`.
@@ -20,8 +21,9 @@ omp plugin link /path/to/omp-permission-auto-review
 Disable `@gotgenes/pi-permission-system` and `@erichll/pi-auto-review` in OMP
 before using this extension, so each call is reviewed once. For the extension
 to own tool approval, set `tools.approvalMode: yolo` in OMP's `config.yml`.
-The extension asks for manual approval when review fails in an interactive
-session, and blocks when no UI is available or the reviewer denies the call.
+By default, failed review blocks the call and returns a reason to the coding agent.
+Explicit `failurePolicy: "ask"` opens manual approval in interactive sessions;
+without a UI it blocks. A completed reviewer denial always blocks.
 
 The optional configuration file is
 `~/.omp/agent/extensions/omp-permission-auto-review/config.json`, or the same
@@ -39,7 +41,7 @@ path under the active OMP profile's agent directory:
   "mode": "review",
   "profile": "custom",
   "reviewer": "model",
-  "failurePolicy": "ask",
+  "failurePolicy": "deny",
   "auditLog": true,
   "baselineRules": true,
   "toolRules": {},
@@ -145,9 +147,11 @@ The `bash` library covers these commands:
 | `local.id` | Current user only: no arguments, `-u`, `-g`, `-G`, `-un`, `-gn`, or `-Gn` |
 | `local.basename` | One literal local path, optionally after `--` |
 | `local.dirname` | One literal local path, optionally after `--` |
+| `workspace.inspect` | Project-local `git diff` / `git status`, approved local queries and bounded output pipelines |
 
 Baseline shell matching checks the **entire command and tool input**. Simple quoted paths with
-spaces are supported. Pipes, command chaining, newlines, redirection, expansion,
+spaces are supported. Fully recognized query chains and pipelines are supported;
+newlines, redirection, expansion,
 globs, escapes, wrappers, executable paths, unknown flags and URL filesystems
 all fall through to normal review, even when suspicious syntax appears inside
 quotes. Service, environment, PTY and background execution parameters also fall
@@ -157,10 +161,27 @@ addition to `command`. Commands are bounded to 4096 characters and 128 words.
 
 Rules assume trusted standard utilities and OMP's execution environment. They
 do not verify binaries, PATH, shell startup code or direnv configuration.
-Commands such as `git status`, `git diff`, `find`, `sed` and `rg` remain on the
-review path unless explicitly covered by a scoped rule: their configuration or
-options can run external code or write files.
-Shell file-content readers and network commands are also outside the library.
+For Git inspection, the library checks effective Git configuration for external
+helpers (diff, textconv, filters, fsmonitor and custom pagers), partial-clone
+fetches and submodules. These cases, probe failures and unknown options still
+use normal review. Checks share a 750 ms budget and are not cached across calls.
+Git status may refresh index metadata; this rule does not authorize staging,
+editing, deleting or publishing files.
+
+For example, `cd /project/hw2 && git diff CMakeLists.txt | head -80` runs locally
+without a model review when `/project/hw2` is inside the workspace and the checks
+pass. The leading `cd` must use an existing absolute path and `&&`; `git -C hw2
+diff` is also supported. `head`/`tail` with numeric limits and `sed -n '1,80p'`
+may filter piped output, without reading named files or executing expressions.
+Explicit tool policies and scoped ask/deny rules still take precedence, including
+in the directory selected by `cd`. Prefix allows do not gain new shell syntax.
+General `find`, `sed`, `rg`, shell file-content readers and network commands remain
+on the review path because their options can have additional effects.
+
+Model review also distinguishes inspection from a later edit/deletion: it should
+allow ordinary low-risk investigation without demanding separate authorization
+for every command or proof that each inspected file needs changing. Explicit
+restrictions and uncertainty material to the action's risk still apply.
 
 With auditing enabled, a match produces `outcome: "baseline_allow"` and the rule
 ID in `detail`, using the existing input fingerprint without logging raw arguments.
@@ -246,8 +267,8 @@ input are never silently truncated: if they cannot fit, review uses the failure
 policy. Subagent task messages are included separately
 as untrusted context, not as evidence of user authorization. An oversized
 request, invalid configuration, missing credentials, timeout, or malformed
-reviewer output asks for manual approval in an interactive session and blocks
-in headless mode.
+reviewer output blocks with an error by default. Explicit `failurePolicy: "ask"`
+opens manual approval in interactive sessions; headless calls still block.
 
 Thinking stays enabled for reasoning-capable models, with `low` requested by
 default. `/permission thinking low|medium|high` changes the requested effort;
@@ -263,7 +284,7 @@ The total budget supports up to 1800 seconds; a single attempt up to 300 seconds
 
 `/permission retries 0` disables retries; supported values are 0–5. Transient
 connection/provider failures and invalid responses may retry with a 1-second delay.
-Valid allow/deny/defer decisions are final. Missing credentials, invalid configuration
+Guardian allow/deny decisions are final; model defer is not a valid output. Missing credentials, invalid configuration
 and permanent HTTP 4xx errors do not retry. Cancellation and exhausted total budgets
 never start another attempt. Failure uses the configured ask/deny fallback.
 
@@ -276,9 +297,11 @@ The extension raises the runtime handler limit with 5 seconds of margin, never
 lowering an existing larger limit or writing OMP's managed configuration. Manual
 approval dialogs pause OMP's handler timer. Restart OMP after upgrading loaded code.
 
-Requests labeled `defer`, and high-risk allows without enough user
-authorization, ask the user in an interactive session and block in headless
-mode. Critical-risk decisions always deny.
+Guardian returns allow or deny, and supports short low-risk allows. Critical-risk
+decisions always deny. A denied action returns its reason to the coding agent.
+The default failure policy is also `deny`, so unavailable review does not open a
+selection dialog. Existing explicit `ask` overrides are preserved; use
+`/permission fallback ask` or manual takeover if you want a dialog on failure.
 
 New genuine user messages invalidate session grants. A change to user instructions
 or effective settings while review or an approval dialog is running blocks the
@@ -316,3 +339,17 @@ strict decision parsing are adapted from
 (version 34.0.1, MIT). The OMP event integration and package wiring are new.
 This project is MIT licensed. Original upstream notices are reproduced in
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+
+## Codex Guardian review base
+
+The reviewer uses the pinned Codex Guardian security policy, authorization scoring
+and allow/deny output contract. Routine implementation steps inherit the user's
+objective: fixing A can require reading or editing related B without separately
+naming every file. The context includes original instructions, the relevant
+assistant proposal, current tool intent, a proposed plan and recent observations.
+If needed, the reviewer can gather bounded local evidence with `inspect_path`
+within the same time budget. Explicit user limits and policy denials still apply.
+
+See [the source mapping and host differences](docs/guardian-base.md) for the exact
+upstream commit, licenses, inspection limits and manual-interaction behavior.

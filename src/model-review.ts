@@ -1,10 +1,11 @@
-import { completeSimple, type Effort } from "@oh-my-pi/pi-ai";
+import { INSPECT_TOOL, inspectPath } from "./review-inspection.ts";
+import { completeSimple, type Effort, type Message } from "@oh-my-pi/pi-ai";
 import type { ExtensionContext, ToolCallEvent } from "@oh-my-pi/pi-coding-agent";
 import type { Config } from "./config.ts";
 import { RETRY_DELAY_MS, reviewBudgetMs, seconds } from "./timing.ts";
 import { abortable, abortableDelay, ReviewCancelledError, ManualTakeoverError } from "./review-control.ts";
 import { reviewProgress } from "./review-feedback.ts";
-import { parseDecision, REVIEWER_SYSTEM_PROMPT, type Decision } from "./review.ts";
+import { parseGuardianAssessment, REVIEWER_SYSTEM_PROMPT, type Decision } from "./review.ts";
 
 import { reviewEvidence, authorizationRevision, StaleAuthorizationError } from "./evidence.ts";
 export { reviewEvidence } from "./evidence.ts";
@@ -22,6 +23,7 @@ export async function modelReview(
   const startedAt = performance.now();
   const modelName = `${model.provider}/${model.id}`;
   const maxAttempts = config.maxRetries + 1;
+  let inspections = 0;
   const progress = reviewProgress(event, ctx, config, modelName);
   const total = new AbortController();
   const totalTimer = setTimeout(() => total.abort(new Error(`total review budget exhausted after ${seconds(reviewBudgetMs(config))}`)), reviewBudgetMs(config));
@@ -52,29 +54,49 @@ export async function modelReview(
           const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
           signal.throwIfAborted();
           if (!auth.ok) throw new PermanentReviewError(`review model authentication failed: ${auth.error}`);
-          const result = await complete(model, {
-            systemPrompt: [REVIEWER_SYSTEM_PROMPT],
-            messages: [{ role: "user", content: evidence, timestamp: Date.now() }],
-          }, {
-            apiKey: auth.apiKey,
-            headers: auth.headers,
-            signal,
-            maxTokens: config.maxTokens,
-            ...(model.reasoning ? { reasoning: config.reasoning as Effort } : {}),
-          });
-          signal.throwIfAborted();
-          if (result.stopReason === "stop") {
-            const text = result.content.filter((part) => part.type === "text").map((part) => part.text).join("");
-            // All valid decisions are final, including deny and defer.
-            return parseDecision(text);
+          const messages: Message[] = [{ role: "user", content: evidence, timestamp: Date.now() }];
+          for (;;) {
+            signal.throwIfAborted();
+            if (authorizationRevision(ctx) !== revision) throw new StaleAuthorizationError();
+            const result = await complete(model, {
+              systemPrompt: [REVIEWER_SYSTEM_PROMPT], messages, tools: [INSPECT_TOOL],
+            }, {
+              apiKey: auth.apiKey, headers: auth.headers, signal, maxTokens: config.maxTokens,
+              ...(model.reasoning ? { reasoning: config.reasoning as Effort } : {}),
+            });
+            signal.throwIfAborted();
+            if (authorizationRevision(ctx) !== revision) throw new StaleAuthorizationError();
+            if (result.stopReason === "stop") {
+              const text = result.content.filter((part) => part.type === "text").map((part) => part.text).join("");
+              return parseGuardianAssessment(text);
+            }
+            if (result.stopReason === "toolUse") {
+              const calls = result.content.filter((part) => part.type === "toolCall");
+              if (!calls.length || inspections + calls.length > 4) throw new PermanentReviewError("review inspection limit reached");
+              messages.push(result);
+              for (const call of calls) {
+                inspections++;
+                signal.throwIfAborted();
+                const remaining = config.maxInputCharacters - Buffer.byteLength(JSON.stringify(messages), "utf8") - 500;
+                if (remaining < 1000) throw new PermanentReviewError("review inspection context budget exhausted");
+                const output = call.name === "inspect_path"
+                  ? await abortable(inspectPath(call.arguments, ctx.cwd, signal, Math.min(remaining, 6000)), signal)
+                  : JSON.stringify({ error: "Only inspect_path is available; commands and writes are not permitted" });
+                const message: Message = { role: "toolResult", toolCallId: call.id, toolName: call.name,
+                  content: [{ type: "text", text: output }], isError: false, timestamp: Date.now() };
+                if (Buffer.byteLength(JSON.stringify([...messages, message]), "utf8") > config.maxInputCharacters) throw new PermanentReviewError("review inspection context budget exhausted");
+                messages.push(message);
+              }
+              continue;
+            }
+            const status = result.errorStatus;
+            const detail = result.errorMessage?.replace(/\s+/g, " ").slice(0, 300);
+            const reason = `reviewer stopped: ${result.stopReason}${status ? ` (HTTP ${status})` : ""}${detail ? `: ${detail}` : ""}`;
+            if (status !== undefined && status >= 400 && status < 500 && ![408, 429].includes(status)) {
+              throw new PermanentReviewError(reason);
+            }
+            throw new Error(reason);
           }
-          const status = result.errorStatus;
-          const detail = result.errorMessage?.replace(/\s+/g, " ").slice(0, 300);
-          const reason = `reviewer stopped: ${result.stopReason}${status ? ` (HTTP ${status})` : ""}${detail ? `: ${detail}` : ""}`;
-          if (status !== undefined && status >= 400 && status < 500 && ![408, 429].includes(status)) {
-            throw new PermanentReviewError(reason);
-          }
-          throw new Error(reason);
         };
         const decision = await abortable(Promise.race([review(), deadline]), total.signal);
         if (authorizationRevision(ctx) !== revision) throw new StaleAuthorizationError();

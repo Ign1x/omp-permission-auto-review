@@ -52,7 +52,7 @@ describe("review decisions", () => {
 
   test("allows, denies, and confirms a defer", async () => {
     calls.length = 0;
-    const options = { config: DEFAULT_CONFIG, record: record as any };
+    const options = { config: { ...DEFAULT_CONFIG, failurePolicy: "ask" as const }, record: record as any };
     expect(await handleToolCall(event as any, ctx, { ...options, review: async () => decision("allow") })).toBeUndefined();
     expect(await handleToolCall(event as any, ctx, { ...options, review: async () => decision("deny", "critical") })).toMatchObject({ block: true });
     expect(await handleToolCall(event as any, ctx, { ...options, review: async () => decision("defer", "high") })).toBeUndefined();
@@ -63,7 +63,7 @@ describe("review decisions", () => {
   test("asks the user when automatic review fails and blocks without UI", async () => {
     calls.length = 0;
     prompts.length = 0;
-    const options = { config: DEFAULT_CONFIG, record: record as any };
+    const options = { config: { ...DEFAULT_CONFIG, failurePolicy: "ask" as const }, record: record as any };
     expect(await handleToolCall(event as any, ctx, { ...options, review: async () => { throw new Error("HTTP 503"); } })).toBeUndefined();
     expect(calls).toEqual(["user_allow_unavailable"]);
     expect(prompts.at(-1)).toContain("HTTP 503");

@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+import { isInspectionCommand } from "./inspection-commands.ts";
 import { isWorkspaceRead } from "./workspace-read.ts";
 
 /**
@@ -121,7 +123,11 @@ const WORKSPACE_READ_RULE: BaselineRule = {
   description: "Existing files and directories inside the workspace, including text line selectors",
 };
 
-export const BASELINE_RULES: readonly BaselineRule[] = [...BASH_RULES, WORKSPACE_READ_RULE];
+const INSPECTION_RULE: BaselineRule = {
+  id: "workspace.inspect", command: "git diff / git status / query pipelines",
+  description: "Local Git inspection without configured executable helpers; optional project cd and bounded output filters",
+};
+export const BASELINE_RULES: readonly BaselineRule[] = [...BASH_RULES, WORKSPACE_READ_RULE, INSPECTION_RULE];
 
 export function matchBaselineRule(tool: string, input: unknown, cwd: string): BaselineRule | undefined {
   if (tool === "read") return isWorkspaceRead(input, cwd) ? WORKSPACE_READ_RULE : undefined;
@@ -136,7 +142,8 @@ export function matchBaselineRule(tool: string, input: unknown, cwd: string): Ba
   if (Object.hasOwn(call, "pty") && call.pty !== false) return;
   if (Object.hasOwn(call, "async") && call.async !== false) return;
   const words = literalWords(call.command);
-  if (!words) return;
-  const [command, ...args] = words;
-  return BASH_RULES.find((rule) => rule.command === command && rule.matches(args));
+  const local = (argv: string[]) => BASH_RULES.find((rule) => rule.command === argv[0] && rule.matches(argv.slice(1)));
+  const rule = words && local(words);
+  if (rule) return rule;
+  return isInspectionCommand(call.command, resolve(cwd, call.cwd as string ?? "."), cwd, (argv) => !!local(argv)) ? INSPECTION_RULE : undefined;
 }

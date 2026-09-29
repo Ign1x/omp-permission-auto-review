@@ -49,3 +49,11 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+
+The Guardian security policy and review template are from OpenAI Codex,
+Copyright 2025 OpenAI, licensed under Apache License 2.0.
+Source: https://github.com/openai/codex/tree/0462dcc062b822bb8fff16cc31ce6eeab69823b9
+Original policy files, Apache license and upstream NOTICE are preserved in
+`src/guardian/`. The runtime composition in `src/review.ts` adapts the environment,
+evidence trust boundary and output parsing for OMP; upstream originals are unchanged.

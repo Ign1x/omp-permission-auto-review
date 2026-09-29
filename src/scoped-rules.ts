@@ -1,3 +1,4 @@
+import { inspectionCommands } from "./inspection-commands.ts";
 import { lstatSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { ordinaryBashInput, parseCommands } from "./command-parser.ts";
@@ -70,10 +71,12 @@ export function matchingRules(event: ToolAction, cwd: string, rules: ScopedRule[
   if (event.toolName === "bash" && ordinaryBashInput(event.input)) {
     const call = event.input;
     if (call.cwd !== undefined && !ordinaryPath(call.cwd)) return [];
-    const actualCwd = canonicalCwd(resolve(cwd, call.cwd ?? "."));
-    const commands = parseCommands(call.command);
+    const chain = inspectionCommands(call.command, resolve(cwd, call.cwd ?? "."));
+    const actualCwd = chain && canonicalCwd(chain.cwd);
+    const commands = chain?.commands;
     if (!actualCwd || !commands) return [];
-    const matches = commands.map((argv) => rules.filter((r) => r.kind === "command" && canonicalCwd(r.cwd) === actualCwd && r.prefix.every((word, i) => argv[i] === word)));
+    const permitAllows = !!parseCommands(call.command);
+    const matches = commands.map((argv) => rules.filter((r) => (permitAllows || r.decision !== "allow") && r.kind === "command" && canonicalCwd(r.cwd) === actualCwd && r.prefix.every((word, i) => argv[i] === word)));
     // Any denial/prompt applies; allow requires coverage for every segment.
     return [...new Set(matches.flat().filter((r) => r.decision !== "allow" || matches.every((group) => group.some((r) => r.decision === "allow"))))];
   }

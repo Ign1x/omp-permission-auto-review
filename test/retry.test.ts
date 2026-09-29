@@ -13,7 +13,7 @@ const ctx = {
   sessionManager: { getBranch: () => [{ type: "message", message: { role: "user", content: "List files" } }] },
   ui: { notify: () => {}, confirm: async () => false },
 } as any;
-const config = { ...DEFAULT_CONFIG, model: "fixture/reviewer", timeoutMs: 60000, reviewTimeoutMs: 300000 };
+const config = { ...DEFAULT_CONFIG, failurePolicy: "ask" as const, model: "fixture/reviewer", timeoutMs: 60000, reviewTimeoutMs: 300000 };
 // Flush the async auth, provider, race and handler continuations before advancing timers.
 async function settle() { for (let i = 0; i < 20; i++) await Promise.resolve(); }
 afterEach(() => jest.useRealTimers());
@@ -38,7 +38,7 @@ describe("review retries", () => {
     expect(efforts).toEqual(["high", undefined]);
   });
 
-  test.each(["deny", "defer"] as const)("a valid %s is final and is never retried", async (outcome) => {
+  test.each(["deny"] as const)("a valid %s is final and is never retried", async (outcome) => {
     let requests = 0;
     let prompts = 0;
     const result = await handleToolCall(event as any, { ...ctx, ui: { ...ctx.ui, confirm: async () => { prompts++; return false; } } }, {
@@ -47,7 +47,7 @@ describe("review retries", () => {
     });
     expect(result).toMatchObject({ block: true });
     expect(requests).toBe(1);
-    expect(prompts).toBe(outcome === "defer" ? 1 : 0);
+    expect(prompts).toBe(0);
   });
 
   test("provider abort and malformed output retry up to the configured limit", async () => {
