@@ -11,6 +11,8 @@ import { syncHandlerBudget } from "./handler-budget.ts";
 import { mayAutoApprove, type Decision } from "./review.ts";
 import { requestApproval, type ApprovalOptions } from "./approval.ts";
 import { sessionApprovals } from "./session-approvals.ts";
+import { policyFingerprint } from "./session-approvals.ts";
+import { authorizationRevision, StaleAuthorizationError } from "./evidence.ts";
 
 function audit(event: ToolCallEvent, outcome: string, detail?: string): void {
   const path = join(dirname(configPath()), "logs", "review.jsonl");
@@ -43,6 +45,7 @@ export async function handleToolCall(
   };
   try {
     config = options.config ?? loadConfig();
+    const revision = authorizationRevision(ctx);
     const policy = evaluatePolicy(event, ctx.cwd, config);
     if (policy.action === "allow") {
       recordDecision(policy.source === "baseline" ? "baseline_allow" : "policy_allow", policy.ruleId ?? policy.reason);
@@ -62,6 +65,8 @@ export async function handleToolCall(
       return approved ? undefined : { block: true, reason: `Permission approval required for ${event.toolName}` };
     }
     const decision = await (options.review ?? modelReview)(event, ctx, config);
+    const latest = options.currentConfig ? options.currentConfig() : options.config ?? loadConfig();
+    if (authorizationRevision(ctx) !== revision || policyFingerprint(latest) !== policyFingerprint(config)) throw new StaleAuthorizationError();
     if (mayAutoApprove(decision)) {
       recordDecision("allow", decision.rationale);
       return undefined;
@@ -78,6 +83,10 @@ export async function handleToolCall(
     return { block: true, reason: `Permission review requires user approval: ${decision.rationale}` };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
+    if (error instanceof StaleAuthorizationError) {
+      recordDecision("stale_authorization", reason);
+      return { block: true, reason };
+    }
     if (config?.failurePolicy === "deny") {
       recordDecision("review_unavailable", reason);
       return { block: true, reason: `Automatic review unavailable: ${reason}` };

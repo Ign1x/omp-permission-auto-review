@@ -5,6 +5,7 @@ import { ordinaryBashInput, parseCommands } from "./command-parser.ts";
 import { canonicalCwd, validateScopedRules, type ScopedRule } from "./scoped-rules.ts";
 import { resolve } from "node:path";
 import { sessionApprovals, policyFingerprint, type SessionApprovals } from "./session-approvals.ts";
+import { authorizationRevision, StaleAuthorizationError } from "./evidence.ts";
 
 export interface ApprovalOptions {
   config?: Config;
@@ -30,15 +31,23 @@ export async function requestApproval(
   const call = JSON.stringify({ tool: event.toolName, input: event.input }, null, 2);
   const message = `${reason}\n\nWorking directory: ${ctx.cwd}\n${call}`;
   const config = options.config;
+  const revision = authorizationRevision(ctx);
   const approvals = options.approvals ?? sessionApprovals;
-  if (!ctx.ui.select) return ctx.ui.confirm(title, `${message}\n\nApprove this call?`);
+  const fresh = () => {
+    if (authorizationRevision(ctx) !== revision || (config && policyFingerprint((options.currentConfig ?? (() => config))()) !== policyFingerprint(config))) throw new StaleAuthorizationError();
+    return true;
+  };
+  if (!ctx.ui.select) {
+    const approved = await ctx.ui.confirm(title, `${message}\n\nApprove this call?`);
+    fresh();
+    return approved;
+  }
   const candidate = config ? proposedCommandRule(event, ctx) : undefined;
   const choices = ["Allow once"];
   if (config && approvals.key(event, ctx)) choices.push("Allow exact call for this session");
   if (candidate) choices.push("Save command rule…");
   choices.push("Deny");
   const selected = await ctx.ui.select(`${title}\n${message}`, choices);
-  const fresh = () => !config || policyFingerprint((options.currentConfig ?? (() => config))()) === policyFingerprint(config);
   if (!fresh()) return false;
   if (selected === "Allow once") return true;
   if (selected === "Allow exact call for this session" && config) return approvals.grant(event, ctx, config);

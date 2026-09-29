@@ -187,8 +187,12 @@ user settings override managed defaults. `/permission path` shows both paths,
 and `/permission reset` removes only `user.json`.
 
 With no file, `model` defaults to `current`, using the active OMP model and
-its credentials. The reviewer receives the exact tool input and up to three
-recent user-authored messages. Subagent task messages are included separately
+its credentials. The reviewer receives the exact tool input and all genuine user
+messages on the current branch, retaining early constraints and later revocations.
+Up to six recent assistant/agent messages provide explicitly untrusted context;
+they are omitted first when the byte budget is tight. User instructions and tool
+input are never silently truncated: if they cannot fit, review uses the failure
+policy. Subagent task messages are included separately
 as untrusted context, not as evidence of user authorization. An oversized
 request, invalid configuration, missing credentials, timeout, or malformed
 reviewer output asks for manual approval in an interactive session and blocks
@@ -235,6 +239,11 @@ loaded in running sessions.
 Requests labeled `defer`, and high-risk allows without enough user
 authorization, ask the user in an interactive session and block in headless
 mode. Critical-risk decisions always deny.
+
+New genuine user messages invalidate session grants. A change to user instructions
+or effective settings while review or an approval dialog is running blocks the
+stale result and requires a fresh tool call. Parent instructions are not inferred
+from delegated task text when OMP does not expose verified parent evidence.
 
 When `auditLog` is on, review records are written to
 `~/.omp/agent/extensions/omp-permission-auto-review/logs/review.jsonl` (or

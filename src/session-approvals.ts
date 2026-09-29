@@ -3,6 +3,7 @@ import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { Config } from "./config.ts";
 import type { ToolAction } from "./policy.ts";
 import { canonicalCwd } from "./scoped-rules.ts";
+import { authorizationRevision } from "./evidence.ts";
 
 function stable(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
@@ -24,7 +25,7 @@ export class SessionApprovals {
   private state(ctx: ExtensionContext, config: Config): State | undefined {
     const key = sessionKey(ctx);
     if (!key) return;
-    const policy = policyFingerprint(config);
+    const policy = fingerprint([policyFingerprint(config), authorizationRevision(ctx)]);
     let state = this.sessions.get(key);
     if (state?.policy !== policy) {
       state = { policy, grants: new Map() };

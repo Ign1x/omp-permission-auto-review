@@ -64,7 +64,7 @@ describe("deliberate session approvals", () => {
   });
   test("policy changes during a dialog cannot create stale approvals", async () => {
     const { ctx, event, approvals } = fixture();
-    expect(await requestApproval(event as any, ctx, "title", "reason", { config: DEFAULT_CONFIG, approvals, currentConfig: () => ({ ...DEFAULT_CONFIG, mode: "deny" }) })).toBe(false);
+    await expect(requestApproval(event as any, ctx, "title", "reason", { config: DEFAULT_CONFIG, approvals, currentConfig: () => ({ ...DEFAULT_CONFIG, mode: "deny" }) })).rejects.toThrow("changed during review");
     expect(approvals.list(ctx, DEFAULT_CONFIG)).toHaveLength(0);
   });
 });

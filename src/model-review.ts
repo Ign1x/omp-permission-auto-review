@@ -4,39 +4,8 @@ import type { Config } from "./config.ts";
 import { RETRY_DELAY_MS, seconds } from "./timing.ts";
 import { parseDecision, REVIEWER_SYSTEM_PROMPT, type Decision } from "./review.ts";
 
-function userText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content.filter((part) => part?.type === "text" && typeof part.text === "string")
-    .map((part) => part.text as string).join("\n");
-}
-
-export function reviewEvidence(event: ToolCallEvent, ctx: ExtensionContext, config: Config): string {
-  const messages = ctx.sessionManager.getBranch()
-    .flatMap((entry) => {
-      if (entry.type !== "message" || entry.message.role !== "user" || entry.message.synthetic) return [];
-      const text = userText(entry.message.content);
-      return text ? [{ attribution: entry.message.attribution, text }] : [];
-    });
-  const users = messages.filter((message) => message.attribution !== "agent").map((message) => message.text).slice(-3);
-  const agentRequests = messages.filter((message) => message.attribution === "agent")
-    .map((message) => message.text).slice(-3);
-  if (users.length === 0 && (ctx.agent.kind !== "sub" || agentRequests.length === 0)) {
-    throw new Error("no reviewable request is available");
-  }
-  const evidence = JSON.stringify({
-    cwd: ctx.cwd,
-    agent: ctx.agent,
-    tool: event.toolName,
-    input: event.input,
-    userMessages: users,
-    agentRequests,
-  });
-  if (Buffer.byteLength(evidence, "utf8") > config.maxInputCharacters) {
-    throw new Error("review evidence exceeds maxInputCharacters");
-  }
-  return evidence;
-}
+import { reviewEvidence, authorizationRevision, StaleAuthorizationError } from "./evidence.ts";
+export { reviewEvidence } from "./evidence.ts";
 
 export async function modelReview(
   event: ToolCallEvent,
@@ -44,13 +13,15 @@ export async function modelReview(
   config: Config,
   complete: typeof completeSimple = completeSimple,
 ): Promise<Decision> {
-  const evidence = reviewEvidence(event, ctx, config);
+  const revision = authorizationRevision(ctx);
   const model = config.model === "current" ? ctx.model : ctx.models.resolve(config.model);
   if (!model) throw new Error(`review model is unavailable: ${config.model}`);
   const startedAt = performance.now();
   const modelName = `${model.provider}/${model.id}`;
   const maxAttempts = config.maxRetries + 1;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (authorizationRevision(ctx) !== revision) throw new StaleAuthorizationError();
+    const evidence = reviewEvidence(event, ctx, config);
     // Each attempt gets its own deadline and cancellation signal, including auth.
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
@@ -91,8 +62,11 @@ export async function modelReview(
         }
         throw new Error(reason);
       };
-      return await Promise.race([review(), deadline]);
+      const decision = await Promise.race([review(), deadline]);
+      if (authorizationRevision(ctx) !== revision) throw new StaleAuthorizationError();
+      return decision;
     } catch (error) {
+      if (error instanceof StaleAuthorizationError) throw error;
       failure = error;
     } finally {
       clearTimeout(timer!);
