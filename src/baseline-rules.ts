@@ -1,5 +1,7 @@
+import { isWorkspaceRead } from "./workspace-read.ts";
+
 /**
- * A deliberately small allow library for ordinary local query utilities.
+ * A deliberately small allow library for workspace reads and local query utilities.
  * Rules match the entire input, never a command prefix. Unsupported syntax is
  * a rule miss, not a denial: the normal reviewer still decides what to do.
  * This assumes OMP's execution environment and standard utilities are trusted;
@@ -9,6 +11,9 @@ export interface BaselineRule {
   readonly id: string;
   readonly command: string;
   readonly description: string;
+}
+
+interface BashRule extends BaselineRule {
   readonly matches: (args: readonly string[]) => boolean;
 }
 
@@ -69,7 +74,7 @@ function flagsAndPaths(
 
 // Keep each rule's argument grammar next to its stable audit ID. New rules
 // should include positive cases and examples that MUST go to model review.
-export const BASELINE_RULES: readonly BaselineRule[] = [
+const BASH_RULES: readonly BashRule[] = [
   {
     id: "local.pwd", command: "pwd", description: "Working directory: no arguments, -L or -P",
     matches: (args) => args.length === 0 || (args.length === 1 && ["-L", "-P"].includes(args[0])),
@@ -110,7 +115,16 @@ export const BASELINE_RULES: readonly BaselineRule[] = [
   },
 ];
 
+const WORKSPACE_READ_RULE: BaselineRule = {
+  id: "workspace.read",
+  command: "read",
+  description: "Existing files and directories inside the workspace, including text line selectors",
+};
+
+export const BASELINE_RULES: readonly BaselineRule[] = [...BASH_RULES, WORKSPACE_READ_RULE];
+
 export function matchBaselineRule(tool: string, input: unknown, cwd: string): BaselineRule | undefined {
+  if (tool === "read") return isWorkspaceRead(input, cwd) ? WORKSPACE_READ_RULE : undefined;
   if (tool !== "bash" || !input || typeof input !== "object" || Array.isArray(input)) return;
   const call = input as Record<string, unknown>;
   // env, service startup, PTY, background execution and future unknown options
@@ -124,5 +138,5 @@ export function matchBaselineRule(tool: string, input: unknown, cwd: string): Ba
   const words = literalWords(call.command);
   if (!words) return;
   const [command, ...args] = words;
-  return BASELINE_RULES.find((rule) => rule.command === command && rule.matches(args));
+  return BASH_RULES.find((rule) => rule.command === command && rule.matches(args));
 }

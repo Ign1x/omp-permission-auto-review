@@ -93,7 +93,16 @@ mode) the baseline library, then model review. An explicit
 `/permission rule bash review` always uses the model, even for a baseline match.
 Explicit `ask` and `deny` policies also take priority over the library.
 
-The initial library covers only the `bash` tool and these commands:
+The `workspace.read` rule permits ordinary OMP `read` calls for existing files and
+directories inside the calling session's working directory, including inline text
+selectors such as `src/main.ts:1-100` and `README.md:raw`. It makes no model request
+and needs no manual approval. Symlink targets must stay inside the workspace.
+URLs, missing/ambiguous paths, globs, multi-file requests, special selectors,
+device files and unknown input fields fall through to review. Explicit tool rules
+and modes still take precedence. These dispatch-time checks trust OMP's read
+implementation; they do not provide an OS sandbox or prevent filesystem races.
+
+The `bash` library covers these commands:
 
 | Rule ID | Accepted scope |
 | --- | --- |
@@ -119,7 +128,7 @@ Rules assume trusted standard utilities and OMP's execution environment. They
 do not verify binaries, PATH, shell startup code or direnv configuration.
 Commands such as `git status`, `git diff`, `find`, `sed` and `rg` remain on the
 model path: their configuration or options can run external code or write files.
-File-content readers and network commands are also outside the initial library.
+Shell file-content readers and network commands are also outside the library.
 
 With auditing enabled, a match produces `outcome: "baseline_allow"` and the rule
 ID in `detail`, using the existing input fingerprint without logging raw arguments.
