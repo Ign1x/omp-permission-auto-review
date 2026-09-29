@@ -7,7 +7,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 const LOCAL_PATH = /^[\p{L}\p{M}\p{N}_./()%+ =-]+$/u;
 const LINE_RANGE = /^(?:[1-9]\d*(?:-[1-9]\d*|\+[1-9]\d*|-)?)(?:,[1-9]\d*(?:-[1-9]\d*|\+[1-9]\d*|-)?)*$|^-[1-9]\d*$/;
 
-function ordinaryPath(path: string): boolean {
+export function ordinaryPath(path: string): boolean {
   return LOCAL_PATH.test(path) && !path.startsWith("//") && path.trim() === path;
 }
 

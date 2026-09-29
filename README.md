@@ -139,6 +139,34 @@ unrecognized syntax should always fall through to review.
 
 ## Configuration and review behavior
 
+Scoped rules are stored in `scopedRules` and managed with `/permission scoped
+list`, `/permission scoped remove <id>`, or `/permission scoped add <JSON>`:
+
+```json
+{"id":"project-tests","kind":"command","cwd":"/work/project","prefix":["bun","test"],"decision":"allow"}
+```
+
+```json
+{"id":"project-source","kind":"path","tool":"write","root":"/work/project/src","decision":"allow"}
+```
+
+Command rules match literal tokens in an exact working directory. Supported
+`;`, `&&`, `||` and `|` combinations need an allow rule for every component.
+Expansion, redirection, background execution, environment overrides and commands
+that change shell state fall through to review. Broad interpreter allow prefixes
+are rejected. A command allow rule trusts that command's implementation, scripts,
+configuration and executable lookup; it does not restrict their filesystem effects.
+Path rules cover the built-in `read` and ordinary `write` schemas. Opaque `edit`
+patches and custom tools remain subject to their tool policy or model review.
+
+Matching scoped denials take priority over all allows. Otherwise explicit tool
+rules and non-review global modes take priority, followed by scoped rules (ask
+before allow), baseline rules and the model. Unknown syntax cannot match a scoped
+rule; scoped rules are not a sandbox or a universal deny filter for opaque tools.
+
+`/permission explain bash {"command":"bun test"}` reports the local decision,
+source, rule ID and reason without executing the command or calling the model.
+
 `config.json` can be managed by Nix or another tool. `/permission` never writes
 to it. Changes are stored with mode `0600` in a separate `user.json` beside it;
 user settings override managed defaults. `/permission path` shows both paths,

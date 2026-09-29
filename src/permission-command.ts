@@ -15,6 +15,8 @@ import {
 import { syncHandlerBudget } from "./handler-budget.ts";
 import { handlerBudgetMs, parseTimeoutSeconds, reviewBudgetMs, seconds } from "./timing.ts";
 import { BASELINE_RULES } from "./baseline-rules.ts";
+import { evaluatePolicy } from "./policy.ts";
+import type { ScopedRule } from "./scoped-rules.ts";
 
 const HELP = [
   "/permission                         Open settings",
@@ -29,9 +31,11 @@ const HELP = [
   "/permission audit on|off",
   "/permission baseline on|off|list",
   "/permission rule [<tool> review|ask|allow|deny | remove <tool>]",
+  '/permission scoped list|remove <id>|add <JSON rule>',
+  '/permission explain <tool> <JSON input>  Evaluate without executing',
 ].join("\n");
 
-const COMMANDS = ["show", "path", "help", "reset", "mode", "fallback", "model", "timeout", "retries", "thinking", "max-tokens", "max-input", "audit", "baseline", "rule"];
+const COMMANDS = ["show", "path", "help", "reset", "mode", "fallback", "model", "timeout", "retries", "thinking", "max-tokens", "max-input", "audit", "baseline", "rule", "scoped", "explain"];
 
 export function formatConfig(config: Config): string {
   const rules = Object.entries(config.toolRules).sort(([a], [b]) => a.localeCompare(b));
@@ -48,6 +52,7 @@ export function formatConfig(config: Config): string {
     `max input: ${config.maxInputCharacters} characters`,
     `audit log: ${config.auditLog ? "on" : "off"}`,
     `baseline rules: ${config.baselineRules ? "on" : "off"} (${BASELINE_RULES.length} built-in rules; explicit tool rules take priority)`,
+    `scoped rules: ${config.scopedRules.length}`,
     `tool rules: ${rules.length ? rules.map(([tool, policy]) => `${tool}=${policy}`).join(", ") : "none"}`,
   ].join("\n");
 }
@@ -76,6 +81,30 @@ export async function handlePermissionCommand(args: string, ctx: ExtensionComman
 
   try {
     switch (command) {
+      case "explain": {
+        const match = args.trim().match(/^explain\s+([\w.:-]+)\s+([\s\S]+)$/);
+        if (!match) throw new Error("usage: /permission explain <tool> <JSON input>");
+        ctx.ui.notify(JSON.stringify(evaluatePolicy({ toolName: match[1], input: JSON.parse(match[2]) }, ctx.cwd, current()), null, 2), "info");
+        return;
+      }
+      case "scoped": {
+        const rules = current().scopedRules;
+        if (values.length === 0 || (values.length === 1 && values[0] === "list")) {
+          ctx.ui.notify(JSON.stringify(rules, null, 2), "info");
+          return;
+        }
+        if (values[0] === "remove" && values.length === 2) save({ scopedRules: rules.filter((r) => r.id !== values[1]) });
+        else if (values[0] === "add") {
+          const json = args.trim().replace(/^scoped\s+add\s+/, "");
+          const rule = JSON.parse(json) as ScopedRule;
+          // Validate the complete candidate before displaying or saving it.
+          const { parseConfig } = await import("./config.ts");
+          parseConfig({ ...current(), scopedRules: [...rules, rule] });
+          if (ctx.hasUI && rule.decision === "allow" && !await ctx.ui.confirm("Save scoped permission?", JSON.stringify(rule, null, 2))) return;
+          save({ scopedRules: [...rules, rule] });
+        } else throw new Error("usage: /permission scoped list|remove <id>|add <JSON rule>");
+        break;
+      }
       case "show":
         ctx.ui.notify(formatConfig(current()), "info");
         return;

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@oh-my-pi/pi-coding-agent";
+import { validateScopedRules, type ScopedRule } from "./scoped-rules.ts";
 
 export type Mode = "review" | "ask" | "deny" | "yolo";
 export type ToolPolicy = "review" | "ask" | "allow" | "deny";
@@ -21,6 +22,7 @@ export interface Config {
   auditLog: boolean;
   baselineRules: boolean;
   toolRules: Partial<Record<string, ToolPolicy>>;
+  scopedRules: ScopedRule[];
 }
 
 export const DEFAULT_CONFIG: Config = {
@@ -35,6 +37,7 @@ export const DEFAULT_CONFIG: Config = {
   auditLog: true,
   baselineRules: true,
   toolRules: {},
+  scopedRules: [],
 };
 
 export function configPath(agentDir = getAgentDir()): string {
@@ -63,6 +66,7 @@ export function parseConfig(value: unknown): Config {
     if (!Object.hasOwn(DEFAULT_CONFIG, key)) throw new Error(`unknown config key: ${key}`);
   }
   const config = { ...DEFAULT_CONFIG, ...input } as Config;
+  validateScopedRules(config.scopedRules);
   if (typeof config.model !== "string" || !config.model.trim()) throw new Error("model must be a non-empty string");
   for (const key of ["maxTokens", "timeoutMs", "maxInputCharacters"] as const) {
     if (!Number.isSafeInteger(config[key]) || config[key] <= 0) throw new Error(`${key} must be a positive integer`);
