@@ -14,6 +14,8 @@ import { sessionApprovals } from "./session-approvals.ts";
 import { policyFingerprint } from "./session-approvals.ts";
 import { authorizationRevision, StaleAuthorizationError } from "./evidence.ts";
 import { abortable, startReview, cancelReviews, ReviewCancelledError, ManualTakeoverError } from "./review-control.ts";
+import { decisionFeedback } from "./review-feedback.ts";
+import { recordDiagnostic } from "./diagnostics.ts";
 
 function audit(event: ToolCallEvent, outcome: string, detail?: string): void {
   const path = join(dirname(configPath()), "logs", "review.jsonl");
@@ -40,13 +42,17 @@ export async function handleToolCall(
   options: ApprovalOptions & { review?: Review; record?: typeof audit; signal?: AbortSignal } = {},
 ): Promise<{ block: true; reason: string } | undefined> {
   const record = options.record ?? audit;
+  const started = performance.now();
   let config: Config | undefined;
+  let revision: string | undefined;
   const recordDecision = (outcome: string, detail: string) => {
+    decisionFeedback(ctx, event, outcome, detail);
+    recordDiagnostic(ctx, event, outcome, detail, performance.now() - started);
     if (config?.auditLog !== false) record(event, outcome, detail);
   };
   try {
     config = options.config ?? loadConfig();
-    const revision = authorizationRevision(ctx);
+    revision = authorizationRevision(ctx);
     const policy = evaluatePolicy(event, ctx.cwd, config);
     if (policy.action === "allow") {
       recordDecision(policy.source === "baseline" ? "baseline_allow" : "policy_allow", policy.ruleId ?? policy.reason);
@@ -90,6 +96,11 @@ export async function handleToolCall(
     return { block: true, reason: `Permission review requires user approval: ${decision.rationale}` };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
+    if (revision !== undefined && authorizationRevision(ctx) !== revision) {
+      const detail = new StaleAuthorizationError().message;
+      recordDecision("stale_authorization", detail);
+      return { block: true, reason: detail };
+    }
     if (error instanceof StaleAuthorizationError || error instanceof ReviewCancelledError) {
       recordDecision(error instanceof StaleAuthorizationError ? "stale_authorization" : "cancelled", reason);
       return { block: true, reason };
@@ -115,6 +126,8 @@ export async function handleToolCall(
 
 export default function ompPermissionAutoReview(omp: ExtensionAPI): void {
   registerPermissionCommand(omp);
+  omp.registerShortcut("ctrl+alt+a", { description: "Stop permission review and approve manually", handler: (ctx) => { cancelReviews(ctx, true); } });
+  omp.registerShortcut("ctrl+alt+x", { description: "Cancel permission review and block the call", handler: (ctx) => { cancelReviews(ctx); } });
   omp.on("session_start", (_event, ctx) => syncHandlerBudget(ctx));
   omp.on("session_switch", (_event, ctx) => { sessionApprovals.revoke(ctx); cancelReviews(ctx); });
   omp.on("session_shutdown", (_event, ctx) => { sessionApprovals.revoke(ctx); cancelReviews(ctx); });

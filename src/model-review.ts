@@ -3,6 +3,7 @@ import type { ExtensionContext, ToolCallEvent } from "@oh-my-pi/pi-coding-agent"
 import type { Config } from "./config.ts";
 import { RETRY_DELAY_MS, reviewBudgetMs, seconds } from "./timing.ts";
 import { abortable, abortableDelay, ReviewCancelledError, ManualTakeoverError } from "./review-control.ts";
+import { reviewProgress } from "./review-feedback.ts";
 import { parseDecision, REVIEWER_SYSTEM_PROMPT, type Decision } from "./review.ts";
 
 import { reviewEvidence, authorizationRevision, StaleAuthorizationError } from "./evidence.ts";
@@ -21,6 +22,7 @@ export async function modelReview(
   const startedAt = performance.now();
   const modelName = `${model.provider}/${model.id}`;
   const maxAttempts = config.maxRetries + 1;
+  const progress = reviewProgress(event, ctx, config, modelName);
   const total = new AbortController();
   const totalTimer = setTimeout(() => total.abort(new Error(`total review budget exhausted after ${seconds(reviewBudgetMs(config))}`)), reviewBudgetMs(config));
   const forward = () => total.abort(control.signal?.reason ?? new ReviewCancelledError());
@@ -30,6 +32,7 @@ export async function modelReview(
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       total.signal.throwIfAborted();
       control.progress?.(attempt, "reviewing");
+      progress.attempt(attempt);
       if (authorizationRevision(ctx) !== revision) throw new StaleAuthorizationError();
       const evidence = reviewEvidence(event, ctx, config);
       // Each attempt gets its own deadline and cancellation signal, including auth.
@@ -90,10 +93,12 @@ export async function modelReview(
         ctx.ui.notify(`Review attempt ${attempt}/${maxAttempts} failed: ${reason}\nRetrying in ${seconds(RETRY_DELAY_MS)} (${attempt}/${config.maxRetries} retries).`, "warning");
       }
       control.progress?.(attempt + 1, "retrying");
+      progress.retry(attempt + 1);
       await abortableDelay(RETRY_DELAY_MS, total.signal);
     }
     throw new Error("reviewer retry exhausted");
   } finally {
+    progress.stop();
     clearTimeout(totalTimer);
     control.signal?.removeEventListener("abort", forward);
   }

@@ -140,6 +140,23 @@ unrecognized syntax should always fall through to review.
 
 ## Configuration and review behavior
 
+The TUI shows each running review's model, attempt, elapsed time and maximum
+wait. **Ctrl+Alt+A** stops active reviews in this session and opens manual approval;
+**Ctrl+Alt+X** cancels reviews and blocks their tools. `/permission manual` and
+`/permission cancel` provide the same actions. Manual takeover is an explicit user
+choice and can prompt even when automatic failure fallback is set to deny.
+
+Approval dialogs show the reason, command/path and working directory; **Show full
+input** exposes every argument. **Deny** rejects this call; **Cancel turn** also
+interrupts the agent. Model denials remain final and do not expose an override.
+The status distinguishes local/session allowance, reviewer denial, unavailable
+reviewer, stale authorization and cancellation.
+
+`/permission history` displays the last 50 decisions for this session, their
+elapsed time and reasons, plus outcome counts. It stores input hashes rather than
+raw arguments and remains in memory. `/permission doctor` checks model resolution,
+UI availability and total wait, and explains potential overlapping approval gates.
+
 Approval dialogs offer **Allow once**, **Allow exact call for this session** and,
 for eligible literal shell commands, **Save command rule…**. Saving a rule shows
 the full token prefix and working directory before confirmation. Such a prefix

@@ -19,6 +19,7 @@ import { evaluatePolicy } from "./policy.ts";
 import type { ScopedRule } from "./scoped-rules.ts";
 import { sessionApprovals } from "./session-approvals.ts";
 import { cancelReviews } from "./review-control.ts";
+import { diagnosticHistory } from "./diagnostics.ts";
 
 const HELP = [
   "/permission                         Open settings",
@@ -38,6 +39,8 @@ const HELP = [
   '/permission approvals list|clear|revoke <id>',
   '/permission budget <seconds>       Total review wait (up to 1800 seconds)',
   '/permission cancel                 Cancel active reviews; block their calls',
+  '/permission manual                 Stop active reviews and ask you instead',
+  '/permission history|doctor         Explain recent decisions and setup',
 ].join("\n");
 
 const COMMANDS = ["show", "path", "help", "reset", "mode", "fallback", "model", "timeout", "retries", "thinking", "max-tokens", "max-input", "audit", "baseline", "rule", "scoped", "explain"];
@@ -87,6 +90,26 @@ export async function handlePermissionCommand(args: string, ctx: ExtensionComman
 
   try {
     switch (command) {
+      case "manual":
+        if (values.length) throw new Error("manual takes no arguments");
+        ctx.ui.notify(`Switched ${cancelReviews(ctx, true)} active review(s) to manual approval.`, "info");
+        return;
+      case "history":
+        ctx.ui.notify(diagnosticHistory(ctx), "info");
+        return;
+      case "doctor": {
+        const config = current();
+        const model = config.model === "current" ? ctx.model : ctx.models.resolve(config.model);
+        ctx.ui.notify([
+          `Reviewer: ${model ? `${model.provider}/${model.id}` : `unavailable (${config.model})`}`,
+          `Interactive approval: ${ctx.hasUI ? "available" : "unavailable; unresolved calls block"}`,
+          `Total wait: ${seconds(reviewBudgetMs(config))}; /permission manual or Ctrl+Alt+A takes over`,
+          `Config: ${basePath}; overrides: ${userPath}`,
+          "Only this extension should own approval. Disable overlapping permission extensions; OMP's native gate may still prompt unless tools.approvalMode is yolo.",
+          "This extension checks tool calls; it does not install an OS sandbox.",
+        ].join("\n"), "info");
+        return;
+      }
       case "cancel":
         if (values.length) throw new Error("cancel takes no arguments");
         ctx.ui.notify(`Cancelled ${cancelReviews(ctx)} active review(s).`, "info");

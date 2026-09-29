@@ -6,6 +6,7 @@ import { canonicalCwd, validateScopedRules, type ScopedRule } from "./scoped-rul
 import { resolve } from "node:path";
 import { sessionApprovals, policyFingerprint, type SessionApprovals } from "./session-approvals.ts";
 import { authorizationRevision, StaleAuthorizationError } from "./evidence.ts";
+import { compact, status } from "./review-feedback.ts";
 
 export interface ApprovalOptions {
   config?: Config;
@@ -28,6 +29,7 @@ export async function requestApproval(
   event: ToolCallEvent, ctx: ExtensionContext, title: string, reason: string, options: ApprovalOptions = {},
 ): Promise<boolean> {
   if (!ctx.hasUI) return false;
+  status(ctx, "permission", `Waiting for your approval: ${compact(event.toolName)} · ${compact(reason)}`);
   const call = JSON.stringify({ tool: event.toolName, input: event.input }, null, 2);
   const message = `${reason}\n\nWorking directory: ${ctx.cwd}\n${call}`;
   const config = options.config;
@@ -46,9 +48,17 @@ export async function requestApproval(
   const choices = ["Allow once"];
   if (config && approvals.key(event, ctx)) choices.push("Allow exact call for this session");
   if (candidate) choices.push("Save command rule…");
-  choices.push("Deny");
-  const selected = await ctx.ui.select(`${title}\n${message}`, choices);
+  choices.push("Show full input", "Deny", "Cancel turn");
+  let selected: string | undefined;
+  const input = event.input as Record<string, unknown>;
+  const summary = typeof input?.command === "string" ? `Command: ${JSON.stringify(input.command)}`
+    : typeof input?.path === "string" ? `Path: ${JSON.stringify(input.path)}` : `Tool: ${event.toolName}`;
+  do {
+    selected = await ctx.ui.select(`${title}\n${reason}\nWorking directory: ${ctx.cwd}\n${summary}\nChoose Show full input to inspect every argument.`, choices);
+    if (selected === "Show full input") await ctx.ui.select(`${title}\n${message}`, ["Back"]);
+  } while (selected === "Show full input");
   if (!fresh()) return false;
+  if (selected === "Cancel turn") { ctx.abort(); return false; }
   if (selected === "Allow once") return true;
   if (selected === "Allow exact call for this session" && config) return approvals.grant(event, ctx, config);
   if (selected === "Save command rule…" && candidate && config) {
